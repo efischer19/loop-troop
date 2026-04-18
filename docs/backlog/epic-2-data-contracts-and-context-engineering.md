@@ -61,7 +61,7 @@ Implement the directory management layer that enforces strict separation between
 * [ ] Unit tests covering: clone, update, path traversal rejection, symlink rejection, template validation.
 
 **Implementation Notes (Tech Lead hints):**
-Use `pathlib.Path.resolve()` and check `.is_relative_to(workspace_base)` for path validation. The `subprocess.run` calls should always set `cwd=` rather than changing the process working directory. Consider adding a `.loop-troop-workspace` sentinel file to workspace directories to distinguish managed clones from user directories.
+Use `pathlib.Path.resolve()` and check `.is_relative_to(workspace_base)` for path validation. The `subprocess.run` calls should always set `cwd=` rather than changing the Control Plane's host process working directory. Consider adding a `.loop-troop-workspace` sentinel file to workspace directories to distinguish managed clones from user directories.
 
 ---
 

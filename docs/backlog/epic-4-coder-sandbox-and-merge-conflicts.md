@@ -45,7 +45,7 @@ Implement the Coder worker that wakes up on issues labeled `loop: ready`, reads 
 * [ ] Unit tests covering: checklist parsing, patch application, test-pass flow, test-fail retry, max-retry exhaustion.
 
 **Implementation Notes (Tech Lead hints):**
-The checklist parser should use regex to find `- [ ]` items in the issue comments. The self-correction cycle is key: on test failure, inject the `stderr`/`stdout` from the Docker sandbox into the next LLM prompt along with the original code patch. The `CodePatch.files_changed` should include both the file path and the complete new file content (not diffs) — simpler for the LLM to produce and for us to apply. Use `git` commands via subprocess for branch/commit/push operations (through `WorkspaceManager`).
+The checklist parser should use regex to find `- [ ]` items in the issue comments. The self-correction cycle is key: on test failure, inject the `stderr`/`stdout` from the Docker sandbox into the next LLM prompt along with the original code patch. The `CodePatch.files_changed` should include both the file path and the complete new file content (not diffs) — simpler for the LLM to produce and for us to apply. For large files (>500 lines), consider using unified diffs instead to avoid exhausting the context window. Use `git` commands via subprocess for branch/commit/push operations (through `WorkspaceManager`).
 
 ---
 
