@@ -1,13 +1,13 @@
 # Loop Troop
-> *A cloneable, multi-agent digital consultancy running locally on Apple Silicon.*
+> *An event driven, local-first AI software factory that works your GitHub backlog while you sleep.*
 
-Loop Troop is an asynchronous, event-driven multi-LLM worker pool for autonomous local development. It uses GitHub webhooks as a message broker to orchestrate stateless AI agents that write, test, and review code inside isolated Docker containers.
+Loop Troop is an asynchronous, tiered, multi-LLM worker pool for autonomous local development. It uses GitHub webhooks as a message broker to orchestrate stateless AI agents that write, test, and review code inside isolated Docker containers.
 
 ## 🏗️ Core Architecture
 This project abandons the in-memory LangGraph state machine in favor of a decentralized, GitHub-native webhook router and shadow log.
 
 * **Message Broker:** GitHub Webhooks & PR Comments.
-* **Event Replay:** Local SQLite Shadow Log (`webhook_events`).
+* **Event Replay:** Local SQLite Shadow Log.
 * **Execution Sandbox:** Ephemeral Docker containers.
 * **Context Hydration:** Repomix.
 * **LLM Output Structuring:** Instructor (Pydantic).
@@ -27,7 +27,7 @@ loop-troop/
 ├── docker-compose.yml       # For local infra (if needed)
 ├── .env.example             # GitHub PAT, Ollama host URLs
 ├── src/
-│   ├── router/              # FastAPI webhook listener & Shadow Log SQLite DB
+│   ├── router/              # Shadow Log SQLite DB
 │   ├── core/                # Repomix hydration, Instructor client, GitHub API wrapper
 │   └── workers/             
 │       ├── triage.py        # 8B Worker (Label waterfall)
