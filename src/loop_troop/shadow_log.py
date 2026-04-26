@@ -211,21 +211,31 @@ class ShadowLog:
             self._connection.execute("INSERT INTO schema_versions(version) VALUES (1)")
 
     def _update_state(self, event_id: str, *, status: str, dispatched_at: bool) -> None:
-        dispatched_at_sql = (
-            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" if dispatched_at else "NULL"
-        )
         with self._connection:
-            cursor = self._connection.execute(
-                f"""
-                UPDATE event_state
-                SET
-                    status = ?,
-                    dispatched_at = {dispatched_at_sql},
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE event_id = ?
-                """,
-                (status, event_id),
-            )
+            if dispatched_at:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE event_state
+                    SET
+                        status = ?,
+                        dispatched_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE event_id = ?
+                    """,
+                    (status, event_id),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE event_state
+                    SET
+                        status = ?,
+                        dispatched_at = NULL,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE event_id = ?
+                    """,
+                    (status, event_id),
+                )
         if cursor.rowcount == 0:
             raise KeyError(f"Unknown event_id: {event_id}")
 
