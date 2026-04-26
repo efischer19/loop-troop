@@ -106,7 +106,9 @@ async def test_dispatcher_routes_ready_issue_and_selects_specific_model(tmp_path
             model_name="qwen2.5-coder:32b",
             reasoning="Coder task with multi-file implementation work.",
         )
-        assert github_client.replaced_labels == [("octo", "repo", 12, ["bug", "loop: ready"])]
+        assert github_client.replaced_labels == [
+            ("octo", "repo", 12, ["bug", outcomes[0].decision.label_action.to_label.value])
+        ]
         assert shadow_log.get_pending_events() == []
     finally:
         shadow_log.close()

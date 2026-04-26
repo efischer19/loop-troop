@@ -18,7 +18,10 @@ from loop_troop.execution import TargetExecutionProfile, WorkerTier
 from loop_troop.shadow_log import LoggedEvent, ShadowLog
 
 SleepFn = Callable[[float], Awaitable[None]]
-DEPENDENCY_PATTERN = re.compile(r"\(Depends on:\s*(?P<deps>#[0-9]+(?:\s*,\s*#[0-9]+)*)\)")
+DEPENDENCY_PATTERN = re.compile(
+    r"\(Depends on:\s*(?P<deps>#[0-9]+(?:\s*,\s*#[0-9]+)*)\)",
+    re.IGNORECASE,
+)
 ISSUE_NUMBER_PATTERN = re.compile(r"#(?P<number>[0-9]+)")
 
 
@@ -286,7 +289,7 @@ class Dispatcher:
                 if inspect.isawaitable(result):
                     result = await result
                 return result
-            except (httpx.HTTPError, TimeoutError):
+            except httpx.HTTPError:
                 if attempt >= self._inference_retries - 1:
                     return None
                 await self._sleep(self._backoff_base_seconds * (2**attempt))
@@ -298,7 +301,9 @@ class Dispatcher:
         blocked: list[int] = []
         for dependency_issue in dependencies:
             if dependency_issue == issue_number:
-                raise ValueError(f"Issue #{issue_number} cannot depend on itself.")
+                raise ValueError(
+                    f"Issue #{issue_number} cannot depend on itself in DAG dependency markers."
+                )
             dependency = await self._github_client.get_issue(owner, repo, dependency_issue)
             if dependency.state.lower() != "closed":
                 blocked.append(dependency_issue)
