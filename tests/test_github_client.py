@@ -1,7 +1,9 @@
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from loop_troop.core.github_client import GitHubClient, InMemoryETagStore
+from loop_troop.shadow_log import ShadowLog
 
 
 @pytest.mark.asyncio
@@ -151,3 +153,37 @@ async def test_poll_issue_comments_reuses_etag_and_handles_not_modified(monkeypa
     assert second.items == []
     assert second.etag == '"comments-etag"'
     assert request_headers[1]["If-None-Match"] == '"comments-etag"'
+
+
+@pytest.mark.asyncio
+async def test_poll_issue_events_logs_before_model_validation(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "test-token")
+    shadow_log = ShadowLog(tmp_path / "shadow.db")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 77,
+                    "created_at": "2026-04-26T00:00:00Z",
+                    "actor": {"login": "octocat", "id": 1},
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    try:
+        async with GitHubClient(
+            client=httpx.AsyncClient(transport=transport, base_url="https://api.github.com"),
+            shadow_log=shadow_log,
+        ) as client:
+            with pytest.raises(ValidationError):
+                await client.poll_issue_events("octo", "repo")
+
+        pending = shadow_log.get_pending_events()
+        assert [item.event_id for item in pending] == ["77"]
+        assert pending[0].event_type == "issue_event"
+        assert pending[0].repo == "octo/repo"
+    finally:
+        shadow_log.close()

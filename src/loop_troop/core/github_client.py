@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Generic, Protocol, TypeVar
+from typing import Any, Awaitable, Callable, Generic, Mapping, Protocol, TypeVar
 from urllib.parse import urlencode
 
 import httpx
@@ -75,6 +75,16 @@ class ETagStore(Protocol):
     def set(self, key: str, value: str) -> None: ...
 
 
+class ShadowEventLogger(Protocol):
+    def log_event(
+        self,
+        event: Mapping[str, Any],
+        *,
+        repo: str,
+        default_event_type: str = "github_event",
+    ) -> bool: ...
+
+
 class InMemoryETagStore:
     def __init__(self) -> None:
         self._values: dict[str, str] = {}
@@ -97,6 +107,7 @@ class GitHubClient:
         max_retries: int = 3,
         backoff_base_seconds: float = 1.0,
         etag_store: ETagStore | None = None,
+        shadow_log: ShadowEventLogger | None = None,
         client: httpx.AsyncClient | None = None,
         sleep: SleepFn = asyncio.sleep,
         now: Callable[[], float] = time.time,
@@ -105,6 +116,7 @@ class GitHubClient:
         self.max_retries = max_retries
         self.backoff_base_seconds = backoff_base_seconds
         self._etag_store = etag_store or InMemoryETagStore()
+        self._shadow_log = shadow_log
         self._sleep = sleep
         self._now = now
 
@@ -215,7 +227,15 @@ class GitHubClient:
                 if response_etag is None:
                     response_etag = etag
 
-            items.extend(model.model_validate(item) for item in response.json())
+            payload = response.json()
+            if self._shadow_log is not None:
+                for item in payload:
+                    self._shadow_log.log_event(
+                        item,
+                        repo=f"{owner}/{repo}",
+                        default_event_type=self._default_event_type(path),
+                    )
+            items.extend(model.model_validate(item) for item in payload)
             next_url = response.links.get("next", {}).get("url")
             request_params = None
 
@@ -286,3 +306,13 @@ class GitHubClient:
         if not params:
             return url
         return f"{url}?{urlencode(sorted(params.items()))}"
+
+    @staticmethod
+    def _default_event_type(path: str) -> str:
+        if path == "/issues/events":
+            return "issue_event"
+        if path == "/issues/comments":
+            return "issue_comment"
+        if path == "/pulls":
+            return "pull_request"
+        return "github_event"
