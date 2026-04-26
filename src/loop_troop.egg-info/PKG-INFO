@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: loop-troop
+Version: 0.1.0
+Summary: Polling-based GitHub automation tooling for Loop Troop.
+Requires-Python: >=3.11
+License-File: LICENSE.md
+Requires-Dist: httpx==0.28.1
+Requires-Dist: pydantic==2.13.3
+Provides-Extra: test
+Requires-Dist: pytest==9.0.3; extra == "test"
+Requires-Dist: pytest-asyncio==1.3.0; extra == "test"
+Dynamic: license-file

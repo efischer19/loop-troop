@@ -1,0 +1,12 @@
+LICENSE.md
+README.md
+pyproject.toml
+src/loop_troop/__init__.py
+src/loop_troop.egg-info/PKG-INFO
+src/loop_troop.egg-info/SOURCES.txt
+src/loop_troop.egg-info/dependency_links.txt
+src/loop_troop.egg-info/requires.txt
+src/loop_troop.egg-info/top_level.txt
+src/loop_troop/core/__init__.py
+src/loop_troop/core/github_client.py
+tests/test_github_client.py

@@ -3,6 +3,12 @@
 
 Loop Troop is an asynchronous, polling-based, multi-agent AI software factory. Instead of a monolithic in-memory state machine, it uses **GitHub issues and PR comments as the message broker and state tracker**, orchestrating stateless "chunky" worker agents that hydrate context, execute work, and sleep.
 
+## 🔐 GitHub Authentication (MVP)
+
+For the polling client MVP, use a **dedicated GitHub Machine Account** with a fine-grained Personal Access Token scoped only to the target repositories. Store the token in the native host environment as `GITHUB_PAT` and configure the polling cadence with `LOOP_TROOP_POLL_INTERVAL`.
+
+Per [ADR-0001](docs/architecture/ADR-0001-air-gap-security-model.md), this token belongs only in the native Control Plane environment and must never be passed into Docker containers.
+
 ## 🏗️ Core Architecture
 
 ### Codebase Separation & The "Air-Gap" Security Model
