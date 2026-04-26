@@ -260,3 +260,18 @@ def test_target_execution_profile_model_override_flows_to_llm_client() -> None:
 
     assert response == DummyResponse(ok=True)
     assert captured["model"] == "qwen2.5-coder:32b"
+
+
+def test_dispatcher_updates_loop_labels_for_real_transition() -> None:
+    issue = GitHubIssue(
+        number=42,
+        state="open",
+        labels=[GitHubLabel(name="bug"), GitHubLabel(name=WorkflowLabel.READY.value)],
+    )
+
+    Dispatcher.validate_label_transition(WorkflowLabel.READY, WorkflowLabel.NEEDS_REVIEW)
+
+    assert Dispatcher._updated_labels(issue, WorkflowLabel.NEEDS_REVIEW) == [
+        "bug",
+        "loop: needs-review",
+    ]

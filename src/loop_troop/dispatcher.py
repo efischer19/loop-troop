@@ -234,7 +234,7 @@ class Dispatcher:
             return DispatchOutcome(
                 event_id=event.event_id,
                 status="failed",
-                reason="Ollama classification failed after 3 attempts.",
+                reason=f"Ollama classification failed after {self._inference_retries} attempts.",
             )
 
         if classification.route != expected_route:
@@ -286,7 +286,7 @@ class Dispatcher:
                 if inspect.isawaitable(result):
                     result = await result
                 return result
-            except (httpx.HTTPError, TimeoutError, ValueError):
+            except (httpx.HTTPError, TimeoutError):
                 if attempt >= self._inference_retries - 1:
                     return None
                 await self._sleep(self._backoff_base_seconds * (2**attempt))
