@@ -262,7 +262,10 @@ class Dispatcher:
             issue.number,
             labels=self._updated_labels(issue, target_label),
         )
-        self._shadow_log.mark_dispatched(event.event_id)
+        self._shadow_log.mark_dispatched(
+            event.event_id,
+            dispatch_target=f"{decision.target_profile.tier.value}:{decision.target_profile.model_name}",
+        )
         return DispatchOutcome(
             event_id=event.event_id,
             status="dispatched",
