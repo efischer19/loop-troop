@@ -11,6 +11,23 @@ from .github_client import (
     PollResponse,
 )
 from .llm_client import LLMClient, PreparedLLMClient
+from .schemas import (
+    ArchitectPlan,
+    ChecklistItem,
+    CodePatch,
+    DispatchDecision,
+    DispatchLabelAction,
+    EventType,
+    FeaturePlan,
+    FileChange,
+    LabelActionType,
+    ReviewComment,
+    ReviewVerdict,
+    ReviewVerdictType,
+    SubIssue,
+    TargetExecutionProfile,
+    WorkerTier,
+)
 
 __all__ = [
     "GitHubClient",
@@ -23,4 +40,19 @@ __all__ = [
     "LLMClient",
     "PollResponse",
     "PreparedLLMClient",
+    "ArchitectPlan",
+    "ChecklistItem",
+    "CodePatch",
+    "DispatchDecision",
+    "DispatchLabelAction",
+    "EventType",
+    "FeaturePlan",
+    "FileChange",
+    "LabelActionType",
+    "ReviewComment",
+    "ReviewVerdict",
+    "ReviewVerdictType",
+    "SubIssue",
+    "TargetExecutionProfile",
+    "WorkerTier",
 ]
