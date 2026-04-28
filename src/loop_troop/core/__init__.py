@@ -1,5 +1,10 @@
 """Core Loop Troop functionality."""
 
+from .context_hydrator import (
+    ContextBudgetExceededError,
+    ContextHydrator,
+    WorkspaceViolationError,
+)
 from .github_client import (
     GitHubClient,
     GitHubIssue,
@@ -30,6 +35,8 @@ from .schemas import (
 )
 
 __all__ = [
+    "ContextBudgetExceededError",
+    "ContextHydrator",
     "GitHubClient",
     "GitHubIssue",
     "GitHubIssueComment",
@@ -55,4 +62,5 @@ __all__ = [
     "SubIssue",
     "TargetExecutionProfile",
     "WorkerTier",
+    "WorkspaceViolationError",
 ]
