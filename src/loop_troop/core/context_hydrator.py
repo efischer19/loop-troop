@@ -21,7 +21,7 @@ class WorkspaceViolationError(ValueError):
 def estimate_token_count(text: str) -> int:
     """Estimate token count without introducing a heavyweight tokenizer dependency."""
 
-    return len(re.findall(r"\S+", text))
+    return sum(1 for _ in re.finditer(r"\S+", text))
 
 
 class ContextHydrator:
@@ -97,7 +97,7 @@ class ContextHydrator:
             raise FileNotFoundError(f"Repository path does not exist: {resolved_repo_path}")
         if not resolved_repo_path.is_dir():
             raise NotADirectoryError(f"Repository path is not a directory: {resolved_repo_path}")
-        if resolved_repo_path == self.loop_troop_root or resolved_repo_path.is_relative_to(self.loop_troop_root):
+        if resolved_repo_path.is_relative_to(self.loop_troop_root):
             raise WorkspaceViolationError(
                 "Hydration target must not be inside the Loop Troop installation directory."
             )
@@ -194,7 +194,7 @@ class ContextHydrator:
         marker = "\n[TRUNCATED]"
         marker_tokens = self._token_counter(marker)
         available_tokens = token_budget - marker_tokens
-        if available_tokens <= 0:
+        if available_tokens < 1:
             return marker.lstrip()
 
         cutoff = token_spans[available_tokens - 1].end()
