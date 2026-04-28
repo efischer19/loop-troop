@@ -15,7 +15,7 @@ def _init_fixture_repo(path: Path) -> Path:
     (path / "tests" / "test_app.py").write_text("def test_app():\n    assert True\n")
     subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True, text=True)
     subprocess.run(
-        ["git", "config", "user.name", "Loop Troop Tests"],
+        ["git", "config", "user.name", "LoopTroopTests"],
         cwd=path,
         check=True,
         capture_output=True,
@@ -28,7 +28,7 @@ def _init_fixture_repo(path: Path) -> Path:
         capture_output=True,
         text=True,
     )
-    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True, text=True)
     subprocess.run(["git", "commit", "-m", "Initial fixture"], cwd=path, check=True, capture_output=True, text=True)
     return path
 
@@ -176,7 +176,13 @@ def test_context_hydrator_uses_cache_by_commit_and_focus(tmp_path: Path) -> None
     second = hydrator.hydrate(repo_path=repo_path, issue_context="issue", adr_context="adr")
 
     (repo_path / "CHANGELOG.md").write_text("updated\n")
-    subprocess.run(["git", "add", "CHANGELOG.md"], cwd=repo_path, check=True)
+    subprocess.run(
+        ["git", "add", "CHANGELOG.md"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     subprocess.run(["git", "commit", "-m", "Add changelog"], cwd=repo_path, check=True, capture_output=True, text=True)
 
     third = hydrator.hydrate(repo_path=repo_path, issue_context="issue", adr_context="adr")
