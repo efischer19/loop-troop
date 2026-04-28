@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHubLabel
 from loop_troop.core.llm_client import LLMClient
+from loop_troop.core.schemas import EventType, LabelActionType
 from loop_troop.dispatcher import (
     DispatchClassification,
     DispatchRoute,
@@ -101,13 +102,16 @@ async def test_dispatcher_routes_ready_issue_and_selects_specific_model(tmp_path
         assert len(outcomes) == 1
         assert outcomes[0].status == "dispatched"
         assert outcomes[0].decision is not None
+        assert outcomes[0].decision.event_id == "1"
+        assert outcomes[0].decision.event_type is EventType.LABELED
         assert outcomes[0].decision.target_profile == TargetExecutionProfile(
             tier=WorkerTier.T2,
             model_name="qwen2.5-coder:32b",
             reasoning="Coder task with multi-file implementation work.",
         )
+        assert outcomes[0].decision.label_action.action is LabelActionType.ADD
         assert github_client.replaced_labels == [
-            ("octo", "repo", 12, ["bug", outcomes[0].decision.label_action.to_label.value])
+            ("octo", "repo", 12, ["bug", outcomes[0].decision.label_action.label_name])
         ]
         assert shadow_log.get_pending_events() == []
     finally:

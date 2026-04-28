@@ -14,7 +14,14 @@ from pydantic import BaseModel, Field
 
 from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment
 from loop_troop.core.llm_client import LLMClient
-from loop_troop.execution import TargetExecutionProfile, WorkerTier
+from loop_troop.core.schemas import (
+    DispatchDecision,
+    DispatchLabelAction,
+    EventType,
+    LabelActionType,
+    TargetExecutionProfile,
+)
+from loop_troop.execution import WorkerTier
 from loop_troop.shadow_log import LoggedEvent, ShadowLog
 
 SleepFn = Callable[[float], Awaitable[None]]
@@ -75,17 +82,6 @@ TIER_BY_ROUTE = {
     DispatchRoute.CODER: WorkerTier.T2,
     DispatchRoute.REVIEWER: WorkerTier.T3,
 }
-
-
-class DispatchLabelAction(BaseModel):
-    from_label: WorkflowLabel
-    to_label: WorkflowLabel
-
-
-class DispatchDecision(BaseModel):
-    target_profile: TargetExecutionProfile
-    label_action: DispatchLabelAction
-    reasoning: str = Field(min_length=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,12 +244,17 @@ class Dispatcher:
         target_label = current_label
         self.validate_label_transition(current_label, target_label)
         decision = DispatchDecision(
+            event_id=event.event_id,
+            event_type=EventType(event.event_type),
             target_profile=TargetExecutionProfile(
                 tier=TIER_BY_ROUTE[classification.route],
                 model_name=classification.model_name,
                 reasoning=classification.reasoning,
             ),
-            label_action=DispatchLabelAction(from_label=current_label, to_label=target_label),
+            label_action=DispatchLabelAction(
+                action=LabelActionType.ADD,
+                label_name=target_label.value,
+            ),
             reasoning=classification.reasoning,
         )
         await self._github_client.replace_issue_labels(
