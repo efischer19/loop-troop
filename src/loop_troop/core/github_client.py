@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Generic, Mapping, Protocol, TypeVar
 from urllib.parse import urlencode
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T", bound=BaseModel)
 SleepFn = Callable[[float], Awaitable[None]]
@@ -59,6 +59,22 @@ class GitHubIssueComment(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     user: GitHubUser | None = None
+
+
+class GitHubLabel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+
+
+class GitHubIssue(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    number: int
+    state: str
+    title: str | None = None
+    body: str | None = None
+    labels: list[GitHubLabel] = Field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -192,6 +208,46 @@ class GitHubClient:
             model=GitHubIssueComment,
             params=params,
         )
+
+    async def get_issue(self, owner: str, repo: str, issue_number: int) -> GitHubIssue:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/issues/{issue_number}",
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubIssue.model_validate(response.json())
+
+    async def list_issue_comments(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        per_page: int = 100,
+    ) -> list[GitHubIssueComment]:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+            params={"per_page": per_page},
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return [GitHubIssueComment.model_validate(item) for item in response.json()]
+
+    async def replace_issue_labels(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        labels: list[str],
+    ) -> list[str]:
+        response = await self._client.put(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/labels",
+            json={"labels": labels},
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return [GitHubLabel.model_validate(item).name for item in response.json()]
 
     async def _poll_collection(
         self,
