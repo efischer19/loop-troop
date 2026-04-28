@@ -183,7 +183,9 @@ class ContextHydrator:
 
     def _truncate_codebase_context(self, context: str, *, token_budget: int) -> str:
         if token_budget <= 0:
-            raise ContextBudgetExceededError("No token budget remains for Repomix codebase context.")
+            raise ContextBudgetExceededError(
+                "Codebase context cannot be included: issue and ADR context consume entire token budget."
+            )
 
         token_spans = list(re.finditer(r"\S+", context))
         if len(token_spans) <= token_budget:
@@ -215,4 +217,3 @@ class ContextHydrator:
                 codebase_context,
             ]
         )
-

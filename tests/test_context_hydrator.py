@@ -14,8 +14,20 @@ def _init_fixture_repo(path: Path) -> Path:
     (path / "tests").mkdir()
     (path / "tests" / "test_app.py").write_text("def test_app():\n    assert True\n")
     subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.name", "Loop Troop Tests"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "loop-troop@example.com"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Loop Troop Tests"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "loop-troop@example.com"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-m", "Initial fixture"], cwd=path, check=True, capture_output=True, text=True)
     return path
