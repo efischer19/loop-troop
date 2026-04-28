@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from loop_troop.shadow_log import ShadowLog
@@ -43,28 +45,31 @@ def test_state_transitions_record_dispatched_at(tmp_path) -> None:
     try:
         shadow_log.log_event({"id": 202, "event": "closed"}, repo="octo/repo")
 
-        shadow_log.mark_dispatched(202)
-        dispatched_at = shadow_log._connection.execute(
-            "SELECT dispatched_at FROM event_state WHERE event_id = ?",
+        shadow_log.mark_dispatched(202, dispatch_target="t2:qwen")
+        dispatched_at, dispatch_target = shadow_log._connection.execute(
+            "SELECT dispatched_at, dispatch_target FROM event_state WHERE event_id = ?",
             ("202",),
-        ).fetchone()[0]
+        ).fetchone()
         assert dispatched_at is not None
+        assert dispatch_target == "t2:qwen"
 
         shadow_log.mark_completed(202)
-        status, completed_dispatched_at = shadow_log._connection.execute(
-            "SELECT status, dispatched_at FROM event_state WHERE event_id = ?",
+        status, completed_dispatched_at, completed_target = shadow_log._connection.execute(
+            "SELECT status, dispatched_at, dispatch_target FROM event_state WHERE event_id = ?",
             ("202",),
         ).fetchone()
         assert status == "completed"
         assert completed_dispatched_at is None
+        assert completed_target is None
 
         shadow_log.mark_failed(202)
-        status, failed_dispatched_at = shadow_log._connection.execute(
-            "SELECT status, dispatched_at FROM event_state WHERE event_id = ?",
+        status, failed_dispatched_at, failed_target = shadow_log._connection.execute(
+            "SELECT status, dispatched_at, dispatch_target FROM event_state WHERE event_id = ?",
             ("202",),
         ).fetchone()
         assert status == "failed"
         assert failed_dispatched_at is None
+        assert failed_target is None
     finally:
         shadow_log.close()
 
@@ -101,6 +106,34 @@ def test_shadow_log_creates_versioned_schema(tmp_path) -> None:
         version = shadow_log._connection.execute(
             "SELECT MAX(version) FROM schema_versions"
         ).fetchone()[0]
-        assert version == 1
+        assert version == 2
+    finally:
+        shadow_log.close()
+
+
+def test_shadow_log_sweeps_stale_dispatched_events(tmp_path) -> None:
+    shadow_log = ShadowLog(tmp_path / "shadow.db")
+
+    try:
+        shadow_log.log_event({"id": 303, "event": "labeled", "issue": {"number": 33}}, repo="octo/repo")
+        shadow_log.mark_dispatched(303, dispatch_target="t2:qwen")
+        stale_at = datetime.now(UTC) - timedelta(minutes=20)
+        shadow_log._connection.execute(
+            "UPDATE event_state SET dispatched_at = ? WHERE event_id = ?",
+            (stale_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "303"),
+        )
+        shadow_log._connection.commit()
+
+        swept = shadow_log.sweep_dispatched_events(timeout_seconds=15 * 60)
+
+        assert [event.event_id for event in swept] == ["303"]
+        assert swept[0].dispatch_target == "t2:qwen"
+        status, dispatched_at, dispatch_target = shadow_log._connection.execute(
+            "SELECT status, dispatched_at, dispatch_target FROM event_state WHERE event_id = ?",
+            ("303",),
+        ).fetchone()
+        assert status == "pending"
+        assert dispatched_at is None
+        assert dispatch_target is None
     finally:
         shadow_log.close()

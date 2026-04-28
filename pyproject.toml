@@ -20,6 +20,9 @@ test = [
   "pytest-asyncio==1.3.0",
 ]
 
+[project.scripts]
+loop-troop-daemon = "loop_troop.daemon:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

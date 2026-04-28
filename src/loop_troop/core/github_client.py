@@ -209,6 +209,11 @@ class GitHubClient:
             params=params,
         )
 
+    async def get_authenticated_user(self) -> GitHubUser:
+        response = await self._client.get("/user", headers=self._default_headers)
+        response.raise_for_status()
+        return GitHubUser.model_validate(response.json())
+
     async def get_issue(self, owner: str, repo: str, issue_number: int) -> GitHubIssue:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/issues/{issue_number}",
