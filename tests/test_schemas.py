@@ -2,6 +2,8 @@ import pytest
 from pydantic import ValidationError
 
 from loop_troop.core.schemas import (
+    ADRDocument,
+    ADRStatus,
     ArchitectPlan,
     ChecklistItem,
     CodePatch,
@@ -21,6 +23,13 @@ from loop_troop.core.schemas import (
 
 
 def test_schema_construction_uses_canonical_models() -> None:
+    adr_document = ADRDocument(
+        id="ADR-0001",
+        title="Use ADRs",
+        status=ADRStatus.ACCEPTED,
+        decision_summary="We will record significant architectural decisions in ADRs.",
+        full_text="# ADR-0001: Use ADRs\n\n## Decision\n\nWe will record significant architectural decisions in ADRs.",
+    )
     profile = TargetExecutionProfile(
         tier=WorkerTier.T2,
         model_name="qwen2.5-coder:32b",
@@ -63,6 +72,7 @@ def test_schema_construction_uses_canonical_models() -> None:
         comments=[ReviewComment(path="tests/test_schemas.py", line=1, body="Looks good.")],
     )
 
+    assert adr_document.status is ADRStatus.ACCEPTED
     assert dispatch_decision.target_profile == profile
     assert architect_plan.checklist_items == [checklist_item]
     assert code_patch.files_changed[0].path == "src/loop_troop/core/schemas.py"

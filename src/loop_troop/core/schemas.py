@@ -36,6 +36,13 @@ class ReviewVerdictType(str, Enum):
     REJECT = "reject"
 
 
+class ADRStatus(str, Enum):
+    ACCEPTED = "Accepted"
+    SUPERSEDED = "Superseded"
+    DEPRECATED = "Deprecated"
+    PROPOSED = "Proposed"
+
+
 class TargetExecutionProfile(BaseModel):
     tier: WorkerTier
     model_name: str = Field(min_length=1)
@@ -93,6 +100,14 @@ class ArchitectPlan(BaseModel):
     checklist_items: list[ChecklistItem] = Field(default_factory=list)
     adr_references: list[str] = Field(default_factory=list)
     verification_strategy: str = Field(min_length=1)
+
+
+class ADRDocument(BaseModel):
+    id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    status: ADRStatus
+    decision_summary: str = Field(min_length=1)
+    full_text: str = Field(min_length=1)
 
 
 class SubIssue(BaseModel):
@@ -161,6 +176,8 @@ class ReviewVerdict(BaseModel):
 
 
 __all__ = [
+    "ADRDocument",
+    "ADRStatus",
     "ArchitectPlan",
     "ChecklistItem",
     "CodePatch",

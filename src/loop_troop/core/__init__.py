@@ -1,5 +1,6 @@
 """Core Loop Troop functionality."""
 
+from .adr_loader import ADRLoader
 from .context_hydrator import (
     ContextBudgetExceededError,
     ContextHydrator,
@@ -17,6 +18,8 @@ from .github_client import (
 )
 from .llm_client import LLMClient, PreparedLLMClient
 from .schemas import (
+    ADRDocument,
+    ADRStatus,
     ArchitectPlan,
     ChecklistItem,
     CodePatch,
@@ -36,6 +39,9 @@ from .schemas import (
 from .workspace_manager import TemplateValidationError, WorkspaceManager, WorkspaceUpdateError
 
 __all__ = [
+    "ADRDocument",
+    "ADRLoader",
+    "ADRStatus",
     "ContextBudgetExceededError",
     "ContextHydrator",
     "GitHubClient",
