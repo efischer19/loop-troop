@@ -2,28 +2,48 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import instructor
 from openai import OpenAI
+from pydantic import BaseModel
 
 from loop_troop.execution import WorkerTier
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_API_KEY = "ollama"
+DEFAULT_MAX_RETRIES = 3
 DEFAULT_MODEL_ENV_VARS = {
     WorkerTier.T1: "LOOP_TROOP_T1_MODEL",
     WorkerTier.T2: "LOOP_TROOP_T2_MODEL",
     WorkerTier.T3: "LOOP_TROOP_T3_MODEL",
 }
+_CREDENTIAL_PATTERNS = (
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgho_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+)
+_LOGGER = logging.getLogger("loop_troop.llm_client")
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedLLMClient:
     client: Any
     model_name: str
+
+
+class PromptSanitizationError(ValueError):
+    """Raised when a prompt appears to contain credentials."""
+
+
+class _HealthCheckResponse(BaseModel):
+    status: str
 
 
 class LLMClient:
@@ -64,13 +84,66 @@ class LLMClient:
         mode: instructor.Mode = instructor.Mode.JSON,
         **kwargs: Any,
     ) -> Any:
+        self._validate_messages(messages)
         prepared = self.create(tier=tier, model_override=model_override, mode=mode)
-        return prepared.client.chat.completions.create(
-            response_model=response_model,
-            messages=messages,
-            model=prepared.model_name,
-            **kwargs,
-        )
+        request_kwargs = dict(kwargs)
+        request_kwargs.setdefault("max_retries", DEFAULT_MAX_RETRIES)
+        started_at = time.perf_counter()
+        response: Any = None
+        error: Exception | None = None
+        try:
+            response = prepared.client.chat.completions.create(
+                response_model=response_model,
+                messages=messages,
+                model=prepared.model_name,
+                **request_kwargs,
+            )
+            return response
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
+            _LOGGER.info(
+                "LLM call completed",
+                extra={
+                    "structured_data": {
+                        "tier": tier.value,
+                        "model": prepared.model_name,
+                        "latency_ms": latency_ms,
+                        "usage": self._extract_usage(response),
+                        "success": error is None,
+                    }
+                },
+            )
+
+    def health_check(
+        self,
+        *,
+        tier: WorkerTier,
+        model_override: str | None = None,
+    ) -> bool:
+        try:
+            response = self.complete_structured(
+                tier=tier,
+                model_override=model_override,
+                response_model=_HealthCheckResponse,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a health check endpoint for Loop Troop.",
+                    },
+                    {
+                        "role": "user",
+                        "content": 'Return JSON with {"status":"ok"} and no additional keys.',
+                    },
+                ],
+                temperature=0,
+                max_tokens=32,
+            )
+        except Exception:
+            return False
+        return response.status.strip().lower() == "ok"
 
     @staticmethod
     def _default_model_for_tier(tier: WorkerTier) -> str:
@@ -79,3 +152,41 @@ class LLMClient:
         if not model_name:
             raise ValueError(f"{env_var} must be set when no model_override is provided.")
         return model_name
+
+    @staticmethod
+    def _validate_messages(messages: list[dict[str, str]]) -> None:
+        serialized_messages = json.dumps(messages, sort_keys=True, default=str)
+        if any(pattern.search(serialized_messages) for pattern in _CREDENTIAL_PATTERNS):
+            raise PromptSanitizationError("Prompt rejected because it appears to contain credentials.")
+
+    @staticmethod
+    def _extract_usage(response: Any) -> dict[str, Any] | None:
+        if response is None:
+            return None
+        usage_candidates = (
+            getattr(response, "usage", None),
+            getattr(getattr(response, "raw_response", None), "usage", None),
+            getattr(getattr(response, "_raw_response", None), "usage", None),
+        )
+        for usage in usage_candidates:
+            normalized = LLMClient._normalize_usage(usage)
+            if normalized is not None:
+                return normalized
+        return None
+
+    @staticmethod
+    def _normalize_usage(usage: Any) -> dict[str, Any] | None:
+        if usage is None:
+            return None
+        if isinstance(usage, dict):
+            return usage
+        model_dump = getattr(usage, "model_dump", None)
+        if callable(model_dump):
+            return model_dump()
+        if hasattr(usage, "__dict__"):
+            return {
+                key: value
+                for key, value in vars(usage).items()
+                if not key.startswith("_") and not callable(value)
+            }
+        return {"value": str(usage)}
