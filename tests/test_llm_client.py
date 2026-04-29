@@ -134,7 +134,19 @@ def test_health_check_returns_true_when_model_responds(monkeypatch) -> None:
     assert captured["max_tokens"] == 32
 
 
-def test_complete_structured_rejects_prompts_with_github_credentials(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("credential", "pattern_name"),
+    [
+        ("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "ghp"),
+        ("gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "gho"),
+        ("github_pat_abcdefghijklmnopqrstuvwxyz_1234567890", "github_pat"),
+    ],
+)
+def test_complete_structured_rejects_prompts_with_github_credentials(
+    monkeypatch,
+    credential: str,
+    pattern_name: str,
+) -> None:
     called = False
 
     class FakeCompletions:
@@ -155,14 +167,14 @@ def test_complete_structured_rejects_prompts_with_github_credentials(monkeypatch
         instructor_factory=lambda *_args, **_kwargs: FakeInstructorClient(),
     )
 
-    with pytest.raises(PromptSanitizationError, match="matching the ghp token format"):
+    with pytest.raises(PromptSanitizationError, match=f"matching the {pattern_name} token format"):
         llm_client.complete_structured(
             tier=WorkerTier.T1,
             response_model=DummyResponse,
             messages=[
                 {
                     "role": "user",
-                    "content": "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+                    "content": f"token={credential}",
                 }
             ],
         )

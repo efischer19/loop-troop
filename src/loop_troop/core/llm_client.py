@@ -203,8 +203,34 @@ class LLMClient:
             return model_dump()
         if hasattr(usage, "__dict__"):
             return {
-                key: value
+                key: LLMClient._normalize_usage_value(value)
                 for key, value in vars(usage).items()
-                if not key.startswith("_") and not callable(value)
+                if not key.startswith("_")
+                and not callable(value)
+                and LLMClient._normalize_usage_value(value) is not None
             }
         return None
+
+    @staticmethod
+    def _normalize_usage_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            normalized = {
+                key: LLMClient._normalize_usage_value(nested_value)
+                for key, nested_value in value.items()
+            }
+            return {key: nested_value for key, nested_value in normalized.items() if nested_value is not None}
+        if isinstance(value, list):
+            return [nested_value for item in value if (nested_value := LLMClient._normalize_usage_value(item)) is not None]
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            return LLMClient._normalize_usage_value(model_dump())
+        if hasattr(value, "__dict__"):
+            nested = {
+                key: LLMClient._normalize_usage_value(nested_value)
+                for key, nested_value in vars(value).items()
+                if not key.startswith("_") and not callable(nested_value)
+            }
+            return {key: nested_value for key, nested_value in nested.items() if nested_value is not None}
+        return str(value)
