@@ -153,7 +153,7 @@ class LLMClient:
 
     @staticmethod
     def _validate_messages(messages: list[dict[str, Any]]) -> None:
-        prompt_text = "\n".join(LLMClient._iter_message_strings(messages))
+        prompt_text = "\n".join(LLMClient._collect_message_strings(messages))
         for pattern_name, pattern in _CREDENTIAL_PATTERNS:
             if pattern.search(prompt_text):
                 raise PromptSanitizationError(
@@ -162,19 +162,19 @@ class LLMClient:
                 )
 
     @staticmethod
-    def _iter_message_strings(value: Any) -> tuple[str, ...]:
+    def _collect_message_strings(value: Any) -> tuple[str, ...]:
         if isinstance(value, str):
             return (value,)
         if isinstance(value, dict):
-            strings: list[str] = []
+            dict_strings: list[str] = []
             for nested_value in value.values():
-                strings.extend(LLMClient._iter_message_strings(nested_value))
-            return tuple(strings)
+                dict_strings.extend(LLMClient._collect_message_strings(nested_value))
+            return tuple(dict_strings)
         if isinstance(value, list):
-            strings: list[str] = []
+            list_strings: list[str] = []
             for item in value:
-                strings.extend(LLMClient._iter_message_strings(item))
-            return tuple(strings)
+                list_strings.extend(LLMClient._collect_message_strings(item))
+            return tuple(list_strings)
         return ()
 
     @staticmethod
