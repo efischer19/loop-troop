@@ -155,7 +155,7 @@ def test_complete_structured_rejects_prompts_with_github_credentials(monkeypatch
         instructor_factory=lambda *_args, **_kwargs: FakeInstructorClient(),
     )
 
-    with pytest.raises(PromptSanitizationError):
+    with pytest.raises(PromptSanitizationError, match="matching the ghp token format"):
         llm_client.complete_structured(
             tier=WorkerTier.T1,
             response_model=DummyResponse,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -134,7 +133,7 @@ class LLMClient:
                     },
                     {
                         "role": "user",
-                        "content": 'Return JSON with {"status":"ok"} and no additional keys.',
+                        "content": 'Respond with a JSON object containing exactly one key "status" with value "ok".',
                     },
                 ],
                 temperature=0,
@@ -154,13 +153,29 @@ class LLMClient:
 
     @staticmethod
     def _validate_messages(messages: list[dict[str, Any]]) -> None:
-        serialized_messages = json.dumps(messages, sort_keys=True, default=str)
+        prompt_text = "\n".join(LLMClient._iter_message_strings(messages))
         for pattern_name, pattern in _CREDENTIAL_PATTERNS:
-            if pattern.search(serialized_messages):
+            if pattern.search(prompt_text):
                 raise PromptSanitizationError(
                     "Prompt rejected because it appears to contain a credential "
                     f"matching the {pattern_name} token format."
                 )
+
+    @staticmethod
+    def _iter_message_strings(value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            return (value,)
+        if isinstance(value, dict):
+            strings: list[str] = []
+            for nested_value in value.values():
+                strings.extend(LLMClient._iter_message_strings(nested_value))
+            return tuple(strings)
+        if isinstance(value, list):
+            strings: list[str] = []
+            for item in value:
+                strings.extend(LLMClient._iter_message_strings(item))
+            return tuple(strings)
+        return ()
 
     @staticmethod
     def _extract_usage(response: Any) -> dict[str, Any] | None:
