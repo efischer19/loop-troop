@@ -79,15 +79,14 @@ class LLMClient:
         *,
         tier: WorkerTier,
         response_model: type[Any],
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model_override: str | None = None,
         mode: instructor.Mode = instructor.Mode.JSON,
         **kwargs: Any,
     ) -> Any:
         self._validate_messages(messages)
         prepared = self.create(tier=tier, model_override=model_override, mode=mode)
-        request_kwargs = dict(kwargs)
-        request_kwargs.setdefault("max_retries", DEFAULT_MAX_RETRIES)
+        kwargs.setdefault("max_retries", DEFAULT_MAX_RETRIES)
         started_at = time.perf_counter()
         response: Any = None
         error: Exception | None = None
@@ -96,7 +95,7 @@ class LLMClient:
                 response_model=response_model,
                 messages=messages,
                 model=prepared.model_name,
-                **request_kwargs,
+                **kwargs,
             )
             return response
         except Exception as exc:
@@ -154,7 +153,7 @@ class LLMClient:
         return model_name
 
     @staticmethod
-    def _validate_messages(messages: list[dict[str, str]]) -> None:
+    def _validate_messages(messages: list[dict[str, Any]]) -> None:
         serialized_messages = json.dumps(messages, sort_keys=True, default=str)
         if any(pattern.search(serialized_messages) for pattern in _CREDENTIAL_PATTERNS):
             raise PromptSanitizationError("Prompt rejected because it appears to contain credentials.")
