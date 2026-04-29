@@ -33,6 +33,7 @@ from .schemas import (
     TargetExecutionProfile,
     WorkerTier,
 )
+from .workspace_manager import TemplateValidationError, WorkspaceManager
 
 __all__ = [
     "ContextBudgetExceededError",
@@ -62,5 +63,7 @@ __all__ = [
     "SubIssue",
     "TargetExecutionProfile",
     "WorkerTier",
+    "WorkspaceManager",
     "WorkspaceViolationError",
+    "TemplateValidationError",
 ]
