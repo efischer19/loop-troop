@@ -25,9 +25,9 @@ DEFAULT_MODEL_ENV_VARS = {
     WorkerTier.T3: "LOOP_TROOP_T3_MODEL",
 }
 _CREDENTIAL_PATTERNS = (
-    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bgho_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    ("ghp", re.compile(r"\bghp_[A-Za-z0-9]{36}\b")),
+    ("gho", re.compile(r"\bgho_[A-Za-z0-9]{36}\b")),
+    ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
 )
 _LOGGER = logging.getLogger("loop_troop.llm_client")
 
@@ -155,8 +155,12 @@ class LLMClient:
     @staticmethod
     def _validate_messages(messages: list[dict[str, Any]]) -> None:
         serialized_messages = json.dumps(messages, sort_keys=True, default=str)
-        if any(pattern.search(serialized_messages) for pattern in _CREDENTIAL_PATTERNS):
-            raise PromptSanitizationError("Prompt rejected because it appears to contain credentials.")
+        for pattern_name, pattern in _CREDENTIAL_PATTERNS:
+            if pattern.search(serialized_messages):
+                raise PromptSanitizationError(
+                    "Prompt rejected because it appears to contain a credential "
+                    f"matching the {pattern_name} token format."
+                )
 
     @staticmethod
     def _extract_usage(response: Any) -> dict[str, Any] | None:
@@ -188,4 +192,4 @@ class LLMClient:
                 for key, value in vars(usage).items()
                 if not key.startswith("_") and not callable(value)
             }
-        return {"value": str(usage)}
+        return None
