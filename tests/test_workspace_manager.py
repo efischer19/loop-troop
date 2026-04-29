@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from loop_troop.core import TemplateValidationError, WorkspaceManager, WorkspaceViolationError
+from loop_troop.core import (
+    TemplateValidationError,
+    WorkspaceManager,
+    WorkspaceUpdateError,
+    WorkspaceViolationError,
+)
 
 
 def _run_git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -56,6 +61,24 @@ def test_workspace_manager_updates_existing_clone(tmp_path: Path) -> None:
 
     assert updated_repo == cloned_repo
     assert (updated_repo / "CHANGELOG.md").read_text() == "updated\n"
+
+
+def test_workspace_manager_raises_clear_error_for_non_fast_forward_updates(tmp_path: Path) -> None:
+    source_repo = _init_repo(tmp_path / "source-repo")
+    workspace_base = tmp_path / "workspaces"
+    WorkspaceManager(workspace_base=workspace_base).clone_or_update(str(source_repo))
+
+    def runner(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=command,
+            stderr="fatal: Not possible to fast-forward, aborting.\n",
+        )
+
+    manager = WorkspaceManager(workspace_base=workspace_base, runner=runner)
+
+    with pytest.raises(WorkspaceUpdateError, match="fast-forward pull"):
+        manager.clone_or_update(str(source_repo))
 
 
 def test_workspace_manager_rejects_path_traversal(tmp_path: Path) -> None:

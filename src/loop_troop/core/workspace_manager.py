@@ -15,6 +15,10 @@ class TemplateValidationError(ValueError):
     """Raised when a target repository does not match the expected Loop Troop template."""
 
 
+class WorkspaceUpdateError(RuntimeError):
+    """Raised when an existing managed workspace cannot be updated automatically."""
+
+
 class WorkspaceManager:
     """Manage isolated target repository workspaces outside the Loop Troop source tree."""
 
@@ -37,7 +41,13 @@ class WorkspaceManager:
         if target_path.exists():
             resolved_target_path = self._validate_workspace_path(target_path)
             self._ensure_managed_workspace(resolved_target_path)
-            self._run_git(["git", "pull", "--ff-only"], cwd=resolved_target_path)
+            try:
+                self._run_git(["git", "pull", "--ff-only"], cwd=resolved_target_path)
+            except subprocess.CalledProcessError as error:
+                raise WorkspaceUpdateError(
+                    f"Could not update managed workspace at {resolved_target_path} with a fast-forward pull: "
+                    f"{error.stderr.strip()}"
+                ) from error
         else:
             cloned = True
             self._run_git(["git", "clone", repo_url, str(target_path)], cwd=self.workspace_base)
