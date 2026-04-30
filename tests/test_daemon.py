@@ -72,7 +72,7 @@ class FakeCoderWorker:
 
 
 @pytest.mark.asyncio
-async def test_sync_daemon_runs_pipeline_and_recovers_zombies(
+async def test_sync_daemon_runs_pipeline_recovers_zombies_and_completes_ready_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     caplog: pytest.LogCaptureFixture,
