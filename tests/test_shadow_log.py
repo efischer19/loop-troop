@@ -103,11 +103,11 @@ def test_shadow_log_creates_versioned_schema(tmp_path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        assert {"schema_versions", "raw_events", "event_state", "daemon_checkpoints"} <= tables
+        assert {"schema_versions", "raw_events", "event_state", "daemon_checkpoints", "llm_metrics"} <= tables
         version = shadow_log._connection.execute(
             "SELECT MAX(version) FROM schema_versions"
         ).fetchone()[0]
-        assert version == 3
+        assert version == 4
     finally:
         shadow_log.close()
 

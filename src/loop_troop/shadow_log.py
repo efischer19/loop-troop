@@ -8,7 +8,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from loop_troop.core.metrics import LLMMetrics
 
 DEFAULT_DB_PATH = Path("~/.loop-troop/shadow.db").expanduser()
 
@@ -275,6 +278,40 @@ class ShadowLog:
                 (endpoint, None if last_event_id is None else str(last_event_id), etag),
             )
 
+    def write_llm_metrics(self, metrics: LLMMetrics) -> None:
+        """Persist LLM call metrics to the llm_metrics table."""
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO llm_metrics (
+                    call_id,
+                    event_id,
+                    tier,
+                    model_name,
+                    prompt_tokens,
+                    completion_tokens,
+                    ttft_ms,
+                    total_latency_ms,
+                    instructor_retries,
+                    validation_errors,
+                    success
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    metrics.call_id,
+                    metrics.event_id,
+                    metrics.tier,
+                    metrics.model_name,
+                    metrics.prompt_tokens,
+                    metrics.completion_tokens,
+                    metrics.ttft_ms,
+                    metrics.total_latency_ms,
+                    metrics.instructor_retries,
+                    json.dumps(metrics.validation_errors),
+                    1 if metrics.success else 0,
+                ),
+            )
+
     def _migrate(self) -> None:
         with self._connection:
             self._connection.execute(
@@ -338,7 +375,34 @@ class ShadowLog:
                 self._connection.execute("INSERT INTO schema_versions(version) VALUES (3)")
                 current_version = 3
 
-            if current_version >= 3:
+            if current_version < 4:
+                self._connection.executescript(
+                    """
+                    CREATE TABLE llm_metrics (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        call_id TEXT NOT NULL UNIQUE,
+                        event_id TEXT,
+                        tier TEXT NOT NULL,
+                        model_name TEXT NOT NULL,
+                        prompt_tokens INTEGER,
+                        completion_tokens INTEGER,
+                        ttft_ms REAL,
+                        total_latency_ms REAL NOT NULL,
+                        instructor_retries INTEGER NOT NULL DEFAULT 0,
+                        validation_errors TEXT NOT NULL DEFAULT '[]',
+                        success INTEGER NOT NULL,
+                        recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    );
+
+                    CREATE INDEX idx_llm_metrics_event_id ON llm_metrics(event_id);
+                    CREATE INDEX idx_llm_metrics_tier ON llm_metrics(tier);
+                    CREATE INDEX idx_llm_metrics_recorded_at ON llm_metrics(recorded_at);
+                    """
+                )
+                self._connection.execute("INSERT INTO schema_versions(version) VALUES (4)")
+                current_version = 4
+
+            if current_version >= 4:
                 return
 
     def _update_state(
