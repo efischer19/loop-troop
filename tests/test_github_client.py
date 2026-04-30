@@ -370,3 +370,65 @@ async def test_pull_request_review_helpers_use_expected_github_endpoints(monkeyp
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_and_pull_request_mutation_helpers_use_expected_github_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "test-token")
+    seen_requests: list[tuple[str, str, dict | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read().decode()
+        payload = json.loads(body) if body else None
+        seen_requests.append((request.method, request.url.path, payload))
+        if request.method == "PATCH" and request.url.path.endswith("/issues/comments/19"):
+            return httpx.Response(200, json={"id": 19, "body": payload["body"]})
+        if request.method == "POST" and request.url.path.endswith("/pulls"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": 41,
+                    "number": 41,
+                    "state": "open",
+                    "title": payload["title"],
+                    "body": payload["body"],
+                    "head": {"sha": "abc123", "ref": payload["head"]},
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with GitHubClient(client=httpx.AsyncClient(transport=transport, base_url="https://api.github.com")) as client:
+        comment = await client.update_issue_comment("octo", "repo", 19, body="## Architect Plan\n- [x] Done")
+        pull_request = await client.create_pull_request(
+            "octo",
+            "repo",
+            title="feat: implement item",
+            head="loop/issue-42-item-2",
+            base="main",
+            body="Closes #42",
+        )
+
+    assert comment.body == "## Architect Plan\n- [x] Done"
+    assert pull_request.number == 41
+    assert pull_request.head is not None
+    assert pull_request.head.ref == "loop/issue-42-item-2"
+    assert seen_requests == [
+        (
+            "PATCH",
+            "/repos/octo/repo/issues/comments/19",
+            {"body": "## Architect Plan\n- [x] Done"},
+        ),
+        (
+            "POST",
+            "/repos/octo/repo/pulls",
+            {
+                "title": "feat: implement item",
+                "head": "loop/issue-42-item-2",
+                "base": "main",
+                "body": "Closes #42",
+            },
+        ),
+    ]

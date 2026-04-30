@@ -71,6 +71,32 @@ class WorkspaceManager:
         resolved_repo_path = self._validate_managed_workspace(repo_path)
         self._run_git(["git", "checkout", "-b", branch], cwd=resolved_repo_path)
 
+    def current_branch(self, repo_path: str | Path) -> str:
+        resolved_repo_path = self._validate_managed_workspace(repo_path)
+        completed = self._run_git(["git", "branch", "--show-current"], cwd=resolved_repo_path)
+        return completed.stdout.strip()
+
+    def write_file(self, repo_path: str | Path, path: str | Path, content: str) -> Path:
+        resolved_repo_path = self._validate_managed_workspace(repo_path)
+        candidate_path = (resolved_repo_path / Path(path)).resolve()
+        if not candidate_path.is_relative_to(resolved_repo_path):
+            raise WorkspaceViolationError(
+                f"Workspace file path must remain within the managed repository: {resolved_repo_path}"
+            )
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(content)
+        return candidate_path
+
+    def commit_all(self, repo_path: str | Path, message: str) -> None:
+        resolved_repo_path = self._validate_managed_workspace(repo_path)
+        self._ensure_git_identity(resolved_repo_path)
+        self._run_git(["git", "add", "."], cwd=resolved_repo_path)
+        self._run_git(["git", "commit", "-m", message], cwd=resolved_repo_path)
+
+    def push_branch(self, repo_path: str | Path, branch: str) -> None:
+        resolved_repo_path = self._validate_managed_workspace(repo_path)
+        self._run_git(["git", "push", "-u", "origin", branch], cwd=resolved_repo_path)
+
     def cleanup(self, repo_path: str | Path) -> None:
         resolved_repo_path = self._validate_managed_workspace(repo_path)
         shutil.rmtree(resolved_repo_path)
@@ -123,6 +149,21 @@ class WorkspaceManager:
 
     def _run_git(self, command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
         return self._runner(command, cwd=cwd, check=True, capture_output=True, text=True)
+
+    def _ensure_git_identity(self, repo_path: Path) -> None:
+        for key, value in {
+            "user.name": "Loop Troop",
+            "user.email": "loop-troop@example.com",
+        }.items():
+            completed = self._runner(
+                ["git", "config", key],
+                cwd=repo_path,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode != 0 or not completed.stdout.strip():
+                self._run_git(["git", "config", key, value], cwd=repo_path)
 
     @staticmethod
     def _repo_name_from_url(repo_url: str) -> str:
