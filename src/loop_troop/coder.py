@@ -17,7 +17,7 @@ from loop_troop.core.adr_loader import ADRLoader
 from loop_troop.core.context_hydrator import ContextHydrator
 from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHubLabel, GitHubPullRequest
 from loop_troop.core.llm_client import LLMClient
-from loop_troop.core.schemas import CodePatch, TargetExecutionProfile
+from loop_troop.core.schemas import CodePatch, ConflictResolution, FileChange, TargetExecutionProfile
 from loop_troop.core.workspace_manager import WorkspaceManager
 from loop_troop.docker_sandbox import DockerSandbox, SandboxResult
 from loop_troop.execution import WorkerTier
@@ -982,9 +982,360 @@ class CoderWorker:
         return updated
 
 
+CONFLICT_RESOLUTION_PROMPT = (
+    "You are the Loop Troop conflict resolver. "
+    "A git merge has produced conflicts in one or more files. "
+    "Produce resolved file contents that correctly integrate both versions, "
+    "preserving the intended behavior described in the checklist item. "
+    "Return only a valid ConflictResolution with full resolved file contents."
+)
+
+_CONFLICT_RESOLUTION_COMMIT_MSG = "fix: resolve merge conflicts"
+
+
+class ConflictResolverGitHubClient(Protocol):
+    async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> GitHubPullRequest: ...
+
+    async def list_issue_comments(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        per_page: int = 100,
+    ) -> list[GitHubIssueComment]: ...
+
+    async def replace_issue_labels(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        labels: list[str],
+    ) -> list[str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictResolverOutcome:
+    pr_number: int
+    issue_number: int
+    branch_name: str
+    target_label: WorkflowLabel
+    conflicts_resolved: int = 0
+
+
+class ConflictResolver:
+    """Detects and resolves git merge conflicts for a feature branch.
+
+    Triggered when a PR is labelled ``loop: merge-conflict``.  The resolver:
+
+    1. Performs ``git fetch`` + ``git merge <base_branch>`` in the workspace.
+    2. If the merge is clean it pushes and relabels the PR as ``loop: needs-review``.
+    3. For conflicting files it calls the 35B model with both file versions and the
+       original checklist item to produce a :class:`ConflictResolution`.
+    4. Applies the resolved files, commits the merge, and re-runs tests via
+       :class:`InnerLoop`.
+    5. On test success: pushes and removes ``loop: merge-conflict``.
+       On test failure: escalates to ``loop: needs-help``.
+
+    All git operations are executed with ``cwd=<repo_path>`` — ``os.chdir()`` is
+    never called.
+    """
+
+    def __init__(
+        self,
+        *,
+        github_client: ConflictResolverGitHubClient,
+        llm_client: StructuredLLMClient | None = None,
+        context_hydrator: ContextHydrator | None = None,
+        workspace_manager: WorkspaceManager | None = None,
+        inner_loop: InnerLoop | None = None,
+        runner: Any = subprocess.run,
+        model_override: str | None = None,
+    ) -> None:
+        self._github_client = github_client
+        self._llm_client = llm_client or LLMClient()
+        self._context_hydrator = context_hydrator or ContextHydrator()
+        self._workspace_manager = workspace_manager or WorkspaceManager()
+        self._inner_loop = inner_loop or InnerLoop()
+        self._runner = runner
+        self._model_override = model_override
+
+    async def resolve(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        issue_number: int,
+        repo_path: str | Path,
+        base_branch: str = "main",
+        test_command: str = "make test",
+    ) -> ConflictResolverOutcome:
+        """Resolve merge conflicts in *repo_path* and push the result.
+
+        Parameters
+        ----------
+        owner:
+            Repository owner (GitHub organisation or user).
+        repo:
+            Repository name.
+        pr_number:
+            Pull-request number labelled ``loop: merge-conflict``.
+        issue_number:
+            The tracking issue number that owns the checklist comments.
+        repo_path:
+            Absolute path to the managed workspace directory.
+        base_branch:
+            The branch to merge into the feature branch (default: ``"main"``).
+        test_command:
+            Shell command used to verify the resolved code (default: ``"make test"``).
+        """
+        workspace = Path(repo_path)
+
+        pull_request = await self._github_client.get_pull_request(owner, repo, pr_number)
+        if pull_request.head and pull_request.head.ref:
+            branch_name = pull_request.head.ref
+        else:
+            branch_name = base_branch
+
+        comments = await self._github_client.list_issue_comments(owner, repo, issue_number)
+        checklist_item = CoderWorker._first_unchecked_item(comments)
+
+        # ------------------------------------------------------------------
+        # Attempt the merge; detect conflicts.
+        # ------------------------------------------------------------------
+        self._run_git(["git", "fetch", "origin", base_branch], cwd=workspace)
+        merge_result = self._runner(
+            ["git", "merge", f"origin/{base_branch}"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if merge_result.returncode == 0:
+            # Clean merge — push and relabel.
+            self._workspace_manager.push_branch(workspace, branch_name)
+            labels = self._updated_labels(pull_request.labels, WorkflowLabel.NEEDS_REVIEW)
+            await self._github_client.replace_issue_labels(owner, repo, pr_number, labels=labels)
+            return ConflictResolverOutcome(
+                pr_number=pr_number,
+                issue_number=issue_number,
+                branch_name=branch_name,
+                target_label=WorkflowLabel.NEEDS_REVIEW,
+                conflicts_resolved=0,
+            )
+
+        # ------------------------------------------------------------------
+        # Identify conflicting files.
+        # ------------------------------------------------------------------
+        conflict_files = self._detect_conflicts(workspace)
+        if not conflict_files:
+            # Merge failed for a non-conflict reason — abort and escalate.
+            self._runner(
+                ["git", "merge", "--abort"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            labels = self._updated_labels(pull_request.labels, WorkflowLabel.NEEDS_HELP)
+            await self._github_client.replace_issue_labels(owner, repo, pr_number, labels=labels)
+            return ConflictResolverOutcome(
+                pr_number=pr_number,
+                issue_number=issue_number,
+                branch_name=branch_name,
+                target_label=WorkflowLabel.NEEDS_HELP,
+                conflicts_resolved=0,
+            )
+
+        # ------------------------------------------------------------------
+        # Hydrate context and call the 35B model for a ConflictResolution.
+        # ------------------------------------------------------------------
+        file_contexts = [
+            (
+                f,
+                self._read_conflict_version(workspace, f, stage=2),
+                self._read_conflict_version(workspace, f, stage=3),
+            )
+            for f in conflict_files
+        ]
+        conflict_prompt = self._build_conflict_prompt(
+            file_contexts=file_contexts,
+            checklist_item=checklist_item,
+        )
+        hydrated_context = self._context_hydrator.hydrate(
+            repo_path=workspace,
+            issue_context=conflict_prompt,
+            adr_context="",
+            focus_files=conflict_files,
+        )
+
+        resolution: ConflictResolution = self._llm_client.complete_structured(
+            tier=WorkerTier.T2,
+            response_model=ConflictResolution,
+            messages=[
+                {"role": "system", "content": CONFLICT_RESOLUTION_PROMPT},
+                {"role": "user", "content": hydrated_context},
+            ],
+            model_override=self._model_override,
+            temperature=0,
+        )
+
+        # ------------------------------------------------------------------
+        # Apply resolved files and commit the merge.
+        # ------------------------------------------------------------------
+        for resolved_file in resolution.resolved_files:
+            file_path = workspace / resolved_file.path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(resolved_file.content)
+
+        self._workspace_manager.commit_all(workspace, _CONFLICT_RESOLUTION_COMMIT_MSG)
+
+        # ------------------------------------------------------------------
+        # Re-run tests via InnerLoop.
+        # ------------------------------------------------------------------
+        resolved_file_changes = [
+            FileChange(path=rf.path, content=rf.content) for rf in resolution.resolved_files
+        ]
+        conflict_patch = CodePatch(
+            issue_number=issue_number,
+            checklist_item_index=checklist_item.item_index,
+            branch_name=branch_name,
+            files_changed=resolved_file_changes,
+            test_command=test_command,
+            commit_message=_CONFLICT_RESOLUTION_COMMIT_MSG,
+        )
+
+        inner_loop_result = await self._run_inner_loop(
+            repo_path=workspace,
+            checklist_item=checklist_item,
+            code_patch=conflict_patch,
+        )
+
+        if inner_loop_result.success:
+            self._workspace_manager.push_branch(workspace, branch_name)
+            labels = self._updated_labels(pull_request.labels, WorkflowLabel.NEEDS_REVIEW)
+            await self._github_client.replace_issue_labels(owner, repo, pr_number, labels=labels)
+            return ConflictResolverOutcome(
+                pr_number=pr_number,
+                issue_number=issue_number,
+                branch_name=branch_name,
+                target_label=WorkflowLabel.NEEDS_REVIEW,
+                conflicts_resolved=len(conflict_files),
+            )
+
+        # Tests failed — escalate.
+        labels = self._updated_labels(pull_request.labels, WorkflowLabel.NEEDS_HELP)
+        await self._github_client.replace_issue_labels(owner, repo, pr_number, labels=labels)
+        return ConflictResolverOutcome(
+            pr_number=pr_number,
+            issue_number=issue_number,
+            branch_name=branch_name,
+            target_label=WorkflowLabel.NEEDS_HELP,
+            conflicts_resolved=len(conflict_files),
+        )
+
+    # ------------------------------------------------------------------
+    # Git helpers
+    # ------------------------------------------------------------------
+
+    def _detect_conflicts(self, repo_path: Path) -> list[str]:
+        """Return a list of paths with unresolved merge conflicts."""
+        result = self._runner(
+            ["git", "diff", "--name-only", "--diff-filter=U"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return [f for f in result.stdout.strip().splitlines() if f]
+
+    def _read_conflict_version(self, repo_path: Path, path: str, *, stage: int) -> str:
+        """Read a specific conflict stage (2=ours, 3=theirs) from the git index."""
+        result = self._runner(
+            ["git", "show", f":{stage}:{path}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout if result.returncode == 0 else ""
+
+    def _run_git(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        return self._runner(args, cwd=cwd, capture_output=True, text=True, check=True)
+
+    # ------------------------------------------------------------------
+    # Prompt builder
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_conflict_prompt(
+        *,
+        file_contexts: list[tuple[str, str, str]],
+        checklist_item: ParsedChecklistItem,
+    ) -> str:
+        """Format a conflict resolution prompt for the 35B model.
+
+        *file_contexts* is a list of ``(path, ours_content, theirs_content)`` tuples.
+        """
+        parts: list[str] = [
+            f"Intended behavior: {checklist_item.description}",
+            "",
+        ]
+        for path, ours, theirs in file_contexts:
+            parts += [
+                f"=== {path} ===",
+                f"Version A (ours):\n{ours}",
+                f"Version B (theirs):\n{theirs}",
+                "Produce the merged file content.",
+                "",
+            ]
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Label helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _updated_labels(labels: list[GitHubLabel], target_label: WorkflowLabel) -> list[str]:
+        updated = [label.name for label in labels if label.name not in WorkflowLabel._value2member_map_]
+        updated.append(target_label.value)
+        return updated
+
+    # ------------------------------------------------------------------
+    # Async InnerLoop bridge (mirrors CoderWorker._run_inner_loop)
+    # ------------------------------------------------------------------
+
+    async def _run_inner_loop(
+        self,
+        *,
+        repo_path: Path,
+        checklist_item: ParsedChecklistItem,
+        code_patch: CodePatch,
+    ) -> InnerLoopResult:
+        result = self._inner_loop.run(
+            repo_path=repo_path,
+            checklist_item=checklist_item,
+            code_patch=code_patch,
+        )
+        if inspect.isawaitable(result):
+            resolved = await result
+            if not isinstance(resolved, InnerLoopResult):
+                raise TypeError("InnerLoop.run must return InnerLoopResult.")
+            return resolved
+        if not isinstance(result, InnerLoopResult):
+            raise TypeError("InnerLoop.run must return InnerLoopResult.")
+        return result
+
+
 __all__ = [
     "CoderOutcome",
     "CoderWorker",
+    "ConflictResolver",
+    "ConflictResolverGitHubClient",
+    "ConflictResolverOutcome",
     "ErrorSummary",
     "InnerLoop",
     "InnerLoopResult",
