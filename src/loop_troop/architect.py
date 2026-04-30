@@ -266,7 +266,7 @@ class ArchitectWorker:
     @staticmethod
     def _format_issue_context(issue: GitHubIssue, comments: list[GitHubIssueComment]) -> str:
         rendered_comments = "\n".join(
-            f"- @{getattr(comment.user, 'login', 'unknown')}: {(comment.body or '').strip()}"
+            f"- @{getattr(getattr(comment, 'user', None), 'login', 'unknown')}: {(comment.body or '').strip()}"
             for comment in comments
         ) or "- (none)"
         return "\n".join(

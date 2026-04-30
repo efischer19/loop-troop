@@ -143,7 +143,7 @@ class SubIssue(BaseModel):
 
 class FeaturePlan(BaseModel):
     epic_issue_number: int = Field(ge=1)
-    sub_issues: list[SubIssue] = Field(default_factory=list, min_length=1)
+    sub_issues: list[SubIssue] = Field(min_length=1)
     adr_references: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
