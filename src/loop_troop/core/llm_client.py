@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,7 @@ import instructor
 from openai import OpenAI
 from pydantic import BaseModel
 
+from loop_troop.core.metrics import LLMMetrics, MetricsCollector
 from loop_troop.execution import WorkerTier
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
@@ -53,11 +55,13 @@ class LLMClient:
         api_key: str | None = None,
         openai_factory: type[OpenAI] = OpenAI,
         instructor_factory: Any = instructor.from_openai,
+        metrics_collector: MetricsCollector | None = None,
     ) -> None:
         self._ollama_host = (ollama_host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST).rstrip("/")
         self._api_key = api_key or os.getenv("OLLAMA_API_KEY") or DEFAULT_API_KEY
         self._openai_factory = openai_factory
         self._instructor_factory = instructor_factory
+        self._metrics_collector = metrics_collector
 
     def create(
         self,
@@ -81,11 +85,23 @@ class LLMClient:
         messages: list[dict[str, Any]],
         model_override: str | None = None,
         mode: instructor.Mode = instructor.Mode.JSON,
+        event_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
         self._validate_messages(messages)
         prepared = self.create(tier=tier, model_override=model_override, mode=mode)
         kwargs.setdefault("max_retries", DEFAULT_MAX_RETRIES)
+
+        # Set up retry tracking when a MetricsCollector is configured
+        get_stats = None
+        if self._metrics_collector is not None:
+            max_retries_int = (
+                kwargs["max_retries"] if isinstance(kwargs["max_retries"], int) else DEFAULT_MAX_RETRIES
+            )
+            retrying, get_stats = self._metrics_collector.make_retry_tracker(max_retries_int)
+            kwargs["max_retries"] = retrying
+
+        call_id = MetricsCollector.new_call_id()
         started_at = time.perf_counter()
         response: Any = None
         error: Exception | None = None
@@ -102,6 +118,7 @@ class LLMClient:
             raise
         finally:
             latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
+            usage = self._extract_usage(response)
             _LOGGER.info(
                 "LLM call completed",
                 extra={
@@ -109,11 +126,33 @@ class LLMClient:
                         "tier": tier.value,
                         "model": prepared.model_name,
                         "latency_ms": latency_ms,
-                        "usage": self._extract_usage(response),
+                        "usage": usage,
                         "success": error is None,
                     }
                 },
             )
+            if self._metrics_collector is not None:
+                retries, validation_errors = get_stats() if get_stats is not None else (0, [])
+                prompt_tokens: int | None = None
+                completion_tokens: int | None = None
+                if usage:
+                    prompt_tokens = usage.get("prompt_tokens")
+                    completion_tokens = usage.get("completion_tokens")
+                self._metrics_collector.record(
+                    LLMMetrics(
+                        call_id=call_id,
+                        tier=tier.value,
+                        model_name=prepared.model_name,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        ttft_ms=None,
+                        total_latency_ms=latency_ms,
+                        instructor_retries=retries,
+                        validation_errors=validation_errors,
+                        success=error is None,
+                        event_id=event_id,
+                    )
+                )
 
     def health_check(
         self,
