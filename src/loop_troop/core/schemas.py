@@ -99,7 +99,23 @@ class ArchitectPlan(BaseModel):
     issue_number: int = Field(ge=1)
     checklist_items: list[ChecklistItem] = Field(default_factory=list)
     adr_references: list[str] = Field(default_factory=list)
+    requires_adr: bool = False
+    adr_instructions: str | None = None
     verification_strategy: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_resolution_path(self) -> ArchitectPlan:
+        if self.requires_adr:
+            if not self.adr_instructions:
+                raise ValueError("Architect plans that require an ADR must include adr_instructions.")
+            if self.checklist_items:
+                raise ValueError("Architect plans that require an ADR must not include checklist_items.")
+            return self
+        if self.adr_instructions:
+            raise ValueError("Architect plans without an ADR requirement must not include adr_instructions.")
+        if not self.checklist_items:
+            raise ValueError("Architect plans must include at least one checklist item unless an ADR is required.")
+        return self
 
 
 class ADRDocument(BaseModel):
@@ -114,6 +130,8 @@ class SubIssue(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     depends_on: list[int] = Field(default_factory=list)
+    is_feature: bool = False
+    is_integration_test: bool = False
 
     @field_validator("depends_on")
     @classmethod
@@ -125,7 +143,7 @@ class SubIssue(BaseModel):
 
 class FeaturePlan(BaseModel):
     epic_issue_number: int = Field(ge=1)
-    sub_issues: list[SubIssue] = Field(default_factory=list)
+    sub_issues: list[SubIssue] = Field(default_factory=list, min_length=1)
     adr_references: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -139,6 +157,8 @@ class FeaturePlan(BaseModel):
                     )
                 if dependency == index:
                     raise ValueError(f"Sub-issue {index} cannot depend on itself.")
+        if not self.sub_issues[-1].is_integration_test:
+            raise ValueError("The final sub-issue must be marked as the integration or feature test.")
         return self
 
 
