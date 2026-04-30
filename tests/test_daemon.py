@@ -63,8 +63,16 @@ class FailingReviewerWorker:
         raise RuntimeError("reviewer worker exploded")
 
 
+class FakeCoderWorker:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def handle_issue(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
 @pytest.mark.asyncio
-async def test_sync_daemon_runs_pipeline_and_recovers_zombies(
+async def test_sync_daemon_runs_pipeline_recovers_zombies_and_completes_ready_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     caplog: pytest.LogCaptureFixture,
@@ -151,6 +159,7 @@ async def test_sync_daemon_runs_pipeline_and_recovers_zombies(
         github_client=github_client,
         classifier=FakeClassifier(),
     )
+    coder_worker = FakeCoderWorker()
     daemon = SyncDaemon(
         config=DaemonConfig(
             repo="octo/repo",
@@ -163,6 +172,7 @@ async def test_sync_daemon_runs_pipeline_and_recovers_zombies(
         github_client=github_client,
         shadow_log=daemon_shadow_log,
         dispatcher=dispatcher,
+        coder_worker=coder_worker,
         ollama_transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json={"models": []})
             if request.url.path == "/api/tags"
@@ -182,7 +192,7 @@ async def test_sync_daemon_runs_pipeline_and_recovers_zombies(
                 "SELECT event_id, status FROM event_state ORDER BY event_id"
             ).fetchall()
         )
-        assert statuses == {"200": "dispatched", "201": "dispatched"}
+        assert statuses == {"200": "completed", "201": "completed"}
         issue_checkpoint = reopened.get_checkpoint("repos/octo/repo/issues/events")
         assert issue_checkpoint is not None
         assert issue_checkpoint.last_event_id == "201"
@@ -196,6 +206,7 @@ async def test_sync_daemon_runs_pipeline_and_recovers_zombies(
 
     assert len(label_updates) == 2
     assert all(labels == [WorkflowLabel.READY.value] for _, labels in label_updates)
+    assert [call["issue_number"] for call in coder_worker.calls] == [7, 8]
     warning_record = next(record for record in caplog.records if record.message == "Reset stale dispatched event")
     assert warning_record.structured_data["event_id"] == "200"
     assert warning_record.structured_data["dispatch_target"] == "t2:qwen-stale"

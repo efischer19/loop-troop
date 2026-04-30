@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from loop_troop.architect import ArchitectWorker
+from loop_troop.coder import CoderWorker
 from loop_troop.core.github_client import GitHubClient, GitHubIssueEvent
 from loop_troop.core.llm_client import DEFAULT_OLLAMA_HOST
 from loop_troop.dispatcher import Dispatcher, OllamaDispatcherClassifier, WorkflowLabel
@@ -180,6 +181,7 @@ class SyncDaemon:
         shadow_log: ShadowLog,
         dispatcher: Dispatcher,
         architect_worker: ArchitectWorker | None = None,
+        coder_worker: CoderWorker | None = None,
         reviewer_worker: ReviewerWorker | None = None,
         ollama_transport: httpx.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
@@ -189,6 +191,7 @@ class SyncDaemon:
         self._shadow_log = shadow_log
         self._dispatcher = dispatcher
         self._architect_worker = architect_worker or ArchitectWorker(github_client=github_client)
+        self._coder_worker = coder_worker or CoderWorker(github_client=github_client)
         self._reviewer_worker = reviewer_worker or ReviewerWorker(github_client=github_client)
         self._ollama_transport = ollama_transport
         self._logger = logger or logging.getLogger("loop_troop.daemon")
@@ -291,6 +294,7 @@ class SyncDaemon:
             if label_name not in {
                 WorkflowLabel.NEEDS_PLANNING.value,
                 WorkflowLabel.FEATURE.value,
+                WorkflowLabel.READY.value,
                 WorkflowLabel.NEEDS_REVIEW.value,
             }:
                 continue
@@ -311,6 +315,14 @@ class SyncDaemon:
                         repo=repo,
                         issue_number=issue_number,
                         repo_path=self._repo_path,
+                    )
+                elif label_name == WorkflowLabel.READY.value:
+                    await self._coder_worker.handle_issue(
+                        owner=owner,
+                        repo=repo,
+                        issue_number=issue_number,
+                        repo_path=self._repo_path,
+                        target_execution_profile=outcome.decision.target_profile,
                     )
                 else:
                     await self._reviewer_worker.handle_pull_request(

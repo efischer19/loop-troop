@@ -37,6 +37,7 @@ class WorkflowLabel(str, Enum):
     FEATURE = "loop: feature"
     NEEDS_ADR = "loop: needs-adr"
     READY = "loop: ready"
+    NEEDS_HELP = "loop: needs-help"
     NEEDS_REVIEW = "loop: needs-review"
     EPIC_TRACKING = "loop: epic-tracking"
     APPROVED = "loop: approved"
@@ -65,7 +66,13 @@ VALID_LABEL_TRANSITIONS: dict[WorkflowLabel | None, set[WorkflowLabel]] = {
     },
     WorkflowLabel.FEATURE: {WorkflowLabel.FEATURE, WorkflowLabel.EPIC_TRACKING},
     WorkflowLabel.NEEDS_ADR: {WorkflowLabel.NEEDS_ADR},
-    WorkflowLabel.READY: {WorkflowLabel.READY, WorkflowLabel.NEEDS_REVIEW, WorkflowLabel.DONE},
+    WorkflowLabel.READY: {
+        WorkflowLabel.READY,
+        WorkflowLabel.NEEDS_HELP,
+        WorkflowLabel.NEEDS_REVIEW,
+        WorkflowLabel.DONE,
+    },
+    WorkflowLabel.NEEDS_HELP: {WorkflowLabel.NEEDS_HELP, WorkflowLabel.READY},
     WorkflowLabel.NEEDS_REVIEW: {
         WorkflowLabel.NEEDS_REVIEW,
         WorkflowLabel.APPROVED,

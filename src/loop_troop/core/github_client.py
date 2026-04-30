@@ -368,6 +368,22 @@ class GitHubClient:
         response.raise_for_status()
         return GitHubIssueComment.model_validate(response.json())
 
+    async def update_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        *,
+        body: str,
+    ) -> GitHubIssueComment:
+        response = await self._client.patch(
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            json={"body": body},
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubIssueComment.model_validate(response.json())
+
     async def create_issue(
         self,
         owner: str,
@@ -387,6 +403,31 @@ class GitHubClient:
         )
         response.raise_for_status()
         return GitHubIssue.model_validate(response.json())
+
+    async def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        head: str,
+        base: str,
+        body: str | None = None,
+    ) -> GitHubPullRequest:
+        payload: dict[str, Any] = {
+            "title": title,
+            "head": head,
+            "base": base,
+        }
+        if body is not None:
+            payload["body"] = body
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/pulls",
+            json=payload,
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubPullRequest.model_validate(response.json())
 
     async def _poll_collection(
         self,
