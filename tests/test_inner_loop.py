@@ -550,6 +550,9 @@ def test_is_test_file_standard_patterns() -> None:
     assert InnerLoop._is_test_file("app_test.py") is True
     assert InnerLoop._is_test_file("tests/test_foo.py") is True
     assert InnerLoop._is_test_file("test/conftest.py") is True
+    # Language-agnostic: _test. suffix works for any extension
+    assert InnerLoop._is_test_file("app_test.ts") is True
+    assert InnerLoop._is_test_file("app_test.js") is True
     assert InnerLoop._is_test_file("src/app.py") is False
     assert InnerLoop._is_test_file("src/testing_utils.py") is False
 

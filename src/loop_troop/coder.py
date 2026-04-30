@@ -153,6 +153,12 @@ class InnerLoop:
     model.
     """
 
+    # Directory names that indicate a path is a test directory.
+    _TEST_DIRS: frozenset[str] = frozenset({"tests", "test"})
+    # Filename prefixes / suffixes that identify test files regardless of extension.
+    _TEST_FILENAME_PREFIX: str = "test_"
+    _TEST_FILENAME_SUFFIX: str = "_test."
+
     def __init__(
         self,
         *,
@@ -560,13 +566,17 @@ class InnerLoop:
 
     @staticmethod
     def _is_test_file(path: str) -> bool:
-        """Return True if *path* follows a standard test-file naming convention."""
+        """Return True if *path* follows a standard test-file naming convention.
+
+        Matches ``test_*`` prefixes, ``*_test.*`` suffixes (language-agnostic), and
+        files nested under a ``tests/`` or ``test/`` directory.
+        """
         parts = path.replace("\\", "/").split("/")
         filename = parts[-1]
         return (
-            filename.startswith("test_")
-            or filename.endswith("_test.py")
-            or any(part in ("tests", "test") for part in parts[:-1])
+            filename.startswith(InnerLoop._TEST_FILENAME_PREFIX)
+            or (InnerLoop._TEST_FILENAME_SUFFIX in filename)
+            or any(part in InnerLoop._TEST_DIRS for part in parts[:-1])
         )
 
     @staticmethod
