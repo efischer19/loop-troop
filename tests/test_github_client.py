@@ -428,6 +428,7 @@ async def test_issue_comment_and_pull_request_mutation_helpers_use_expected_gith
                 "title": "feat: implement item",
                 "head": "loop/issue-42-item-2",
                 "base": "main",
+                "draft": False,
                 "body": "Closes #42",
             },
         ),

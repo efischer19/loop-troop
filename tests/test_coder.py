@@ -1,10 +1,11 @@
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from loop_troop.coder import CoderWorker, InnerLoopResult
-from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHubLabel, GitHubPullRequest
+from loop_troop.coder import CoderWorker, InnerLoopResult, PRManager, ParsedChecklistItem
+from loop_troop.core.github_client import CheckboxConflictError, GitHubIssue, GitHubIssueComment, GitHubLabel, GitHubPullRequest
 from loop_troop.core.schemas import CodePatch, FileChange, TargetExecutionProfile
 from loop_troop.core.workspace_manager import WorkspaceManager
 from loop_troop.dispatcher import WorkflowLabel
@@ -40,7 +41,11 @@ class FakeGitHubClient:
         self.comments = comments
         self.updated_comments: list[tuple[int, str]] = []
         self.replaced_labels: list[list[str]] = []
-        self.created_pull_requests: list[dict[str, str]] = []
+        self.created_pull_requests: list[dict[str, Any]] = []
+        self.updated_pull_requests: list[dict[str, Any]] = []
+        # Track (comment_id, etag) for conflict simulation
+        self._conflict_on_next_update: bool = False
+        self.get_issue_comment_calls: int = 0
 
     async def get_issue(self, owner: str, repo: str, issue_number: int) -> GitHubIssue:
         assert (owner, repo, issue_number) == ("octo", "repo", self.issue.number)
@@ -57,6 +62,18 @@ class FakeGitHubClient:
         assert per_page == 100
         return self.comments
 
+    async def get_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> tuple[GitHubIssueComment, str | None]:
+        self.get_issue_comment_calls += 1
+        for comment in self.comments:
+            if comment.id == comment_id:
+                return comment, f"etag-{comment_id}"
+        raise ValueError(f"Comment {comment_id} not found in fake.")
+
     async def update_issue_comment(
         self,
         owner: str,
@@ -64,8 +81,18 @@ class FakeGitHubClient:
         comment_id: int,
         *,
         body: str,
+        if_match: str | None = None,
     ) -> GitHubIssueComment:
+        if self._conflict_on_next_update:
+            self._conflict_on_next_update = False
+            from loop_troop.core.github_client import CheckboxConflictError
+            raise CheckboxConflictError(f"Simulated conflict for comment {comment_id}")
         self.updated_comments.append((comment_id, body))
+        # Keep the in-memory comments list in sync so retries see updated bodies
+        for i, comment in enumerate(self.comments):
+            if comment.id == comment_id:
+                self.comments[i] = GitHubIssueComment(id=comment_id, body=body)
+                break
         return GitHubIssueComment(id=comment_id, body=body)
 
     async def replace_issue_labels(
@@ -88,10 +115,27 @@ class FakeGitHubClient:
         head: str,
         base: str,
         body: str | None = None,
+        draft: bool = False,
     ) -> GitHubPullRequest:
-        payload = {"title": title, "head": head, "base": base, "body": body or ""}
+        payload: dict[str, Any] = {"title": title, "head": head, "base": base, "body": body or "", "draft": draft}
         self.created_pull_requests.append(payload)
-        return GitHubPullRequest(number=88, id=88, state="open", title=title, body=body, head={"sha": "abc", "ref": head})
+        return GitHubPullRequest(
+            number=88, id=88, state="open", title=title, body=body, head={"sha": "abc", "ref": head}, draft=draft
+        )
+
+    async def update_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        draft: bool | None = None,
+    ) -> GitHubPullRequest:
+        payload: dict[str, Any] = {"pull_number": pull_number, "title": title, "body": body, "draft": draft}
+        self.updated_pull_requests.append(payload)
+        return GitHubPullRequest(number=pull_number, id=pull_number, state="open", title=title or "", body=body)
 
 
 class FakeStructuredLLMClient:
@@ -366,3 +410,184 @@ async def test_coder_worker_marks_item_needs_help_after_max_retries(tmp_path: Pa
     assert "- [!] Update the app entrypoint" in github_client.updated_comments[0][1]
     assert github_client.replaced_labels == [["backend", WorkflowLabel.NEEDS_HELP.value]]
     assert _run_git(remote_repo, "branch", "--list", "loop/issue-42-item-2").stdout.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# PRManager unit tests
+# ---------------------------------------------------------------------------
+
+
+def _pr_manager_checklist_item() -> ParsedChecklistItem:
+    return ParsedChecklistItem(
+        comment_id=11,
+        comment_body=(
+            "## Architect Plan\n"
+            "- [ ] Update the app entrypoint\n"
+            "  - Files: `src/app.py`\n"
+            "  - Tests required: No\n"
+            "- [ ] Follow-up item\n"
+            "  - Files: `README.md`\n"
+            "  - Tests required: No\n"
+        ),
+        item_index=1,
+        line_index=1,
+        description="Update the app entrypoint",
+        files_touched=("src/app.py",),
+        requires_test=False,
+        test_instructions=None,
+    )
+
+
+def _pr_manager_all_checked_item() -> ParsedChecklistItem:
+    return ParsedChecklistItem(
+        comment_id=22,
+        comment_body=(
+            "## Architect Plan\n"
+            "- [ ] Only item\n"
+            "  - Files: `src/app.py`\n"
+            "  - Tests required: No\n"
+        ),
+        item_index=1,
+        line_index=1,
+        description="Only item",
+        files_touched=("src/app.py",),
+        requires_test=False,
+        test_instructions=None,
+    )
+
+
+def _pr_manager_issue() -> GitHubIssue:
+    return GitHubIssue(
+        number=42,
+        state="open",
+        title="Test issue",
+        body="Issue body.",
+        labels=[GitHubLabel(name="backend"), GitHubLabel(name=WorkflowLabel.READY.value)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_pr_manager_create_pr_sets_title_body_and_label() -> None:
+    github_client = FakeGitHubClient(_pr_manager_issue(), [])
+    manager = PRManager(github_client=github_client)
+    item = _pr_manager_checklist_item()
+
+    pr = await manager.create_pr(
+        owner="octo",
+        repo="repo",
+        issue=_pr_manager_issue(),
+        checklist_item=item,
+        branch_name="loop/issue-42-item-1",
+        base_branch="main",
+    )
+
+    assert pr.number == 88
+    assert github_client.created_pull_requests[0]["title"] == "#42: Update the app entrypoint"
+    assert "Closes #42" in github_client.created_pull_requests[0]["body"]
+    assert "Update the app entrypoint" in github_client.created_pull_requests[0]["body"]
+    assert github_client.created_pull_requests[0]["draft"] is False
+    # replace_issue_labels is called with the PR number (88) and the needs-review label
+    assert github_client.replaced_labels[0] == [WorkflowLabel.NEEDS_REVIEW.value]
+
+
+@pytest.mark.asyncio
+async def test_pr_manager_check_checkbox_marks_item_checked() -> None:
+    item = _pr_manager_checklist_item()
+    github_client = FakeGitHubClient(_pr_manager_issue(), [GitHubIssueComment(id=11, body=item.comment_body)])
+    manager = PRManager(github_client=github_client)
+
+    await manager.check_checkbox(
+        owner="octo",
+        repo="repo",
+        checklist_item=item,
+        issue=_pr_manager_issue(),
+    )
+
+    assert len(github_client.updated_comments) == 1
+    _, updated_body = github_client.updated_comments[0]
+    assert "- [x] Update the app entrypoint" in updated_body
+    # The other item should remain unchecked
+    assert "- [ ] Follow-up item" in updated_body
+
+
+@pytest.mark.asyncio
+async def test_pr_manager_flag_checkbox_marks_item_flagged() -> None:
+    item = _pr_manager_checklist_item()
+    github_client = FakeGitHubClient(_pr_manager_issue(), [GitHubIssueComment(id=11, body=item.comment_body)])
+    manager = PRManager(github_client=github_client)
+
+    await manager.flag_checkbox(
+        owner="octo",
+        repo="repo",
+        checklist_item=item,
+    )
+
+    assert len(github_client.updated_comments) == 1
+    _, updated_body = github_client.updated_comments[0]
+    assert "- [!] Update the app entrypoint" in updated_body
+
+
+@pytest.mark.asyncio
+async def test_pr_manager_check_checkbox_retries_on_conflict() -> None:
+    item = _pr_manager_checklist_item()
+    github_client = FakeGitHubClient(_pr_manager_issue(), [GitHubIssueComment(id=11, body=item.comment_body)])
+    manager = PRManager(github_client=github_client)
+
+    # Simulate a conflict on the first update attempt
+    github_client._conflict_on_next_update = True
+
+    await manager.check_checkbox(
+        owner="octo",
+        repo="repo",
+        checklist_item=item,
+        issue=_pr_manager_issue(),
+    )
+
+    # The conflict caused a retry: get_issue_comment was called twice (once per attempt)
+    assert github_client.get_issue_comment_calls == 2
+    # Only the second (successful) attempt produced an updated comment
+    assert len(github_client.updated_comments) == 1
+    _, updated_body = github_client.updated_comments[0]
+    assert "- [x] Update the app entrypoint" in updated_body
+
+
+@pytest.mark.asyncio
+async def test_pr_manager_check_checkbox_labels_issue_done_when_all_checked() -> None:
+    item = _pr_manager_all_checked_item()
+    github_client = FakeGitHubClient(_pr_manager_issue(), [GitHubIssueComment(id=22, body=item.comment_body)])
+    manager = PRManager(github_client=github_client)
+
+    await manager.check_checkbox(
+        owner="octo",
+        repo="repo",
+        checklist_item=item,
+        issue=_pr_manager_issue(),
+    )
+
+    # The checkbox was updated
+    assert len(github_client.updated_comments) == 1
+    # And the issue was labelled loop: done because all items are now checked
+    assert any(WorkflowLabel.DONE.value in labels for labels in github_client.replaced_labels)
+
+
+@pytest.mark.asyncio
+async def test_pr_manager_create_pr_ghost_run_creates_draft_with_bake_off_prefix() -> None:
+    github_client = FakeGitHubClient(_pr_manager_issue(), [])
+    manager = PRManager(github_client=github_client)
+    item = _pr_manager_checklist_item()
+
+    pr = await manager.create_pr(
+        owner="octo",
+        repo="repo",
+        issue=_pr_manager_issue(),
+        checklist_item=item,
+        branch_name="loop/issue-42-qwen-coder",
+        base_branch="main",
+        bake_off=True,
+        bake_off_model="qwen2.5-coder:32b",
+    )
+
+    assert pr.draft is True
+    assert github_client.created_pull_requests[0]["title"].startswith("[BAKE-OFF]")
+    assert github_client.created_pull_requests[0]["draft"] is True
+    assert github_client.created_pull_requests[0]["head"] == "loop/issue-42-qwen-coder"
