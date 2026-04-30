@@ -155,7 +155,7 @@ class FakeContextHydrator:
         return self.hydrated_context
 
 
-def build_test_pull_request(*, title: str = "feat: review #42", body: str = "Closes #42") -> GitHubPullRequest:
+def create_mock_pull_request(*, title: str = "feat: review #42", body: str = "Closes #42") -> GitHubPullRequest:
     return GitHubPullRequest(
         id=12,
         number=12,
@@ -167,7 +167,7 @@ def build_test_pull_request(*, title: str = "feat: review #42", body: str = "Clo
     )
 
 
-def build_test_linked_issue() -> GitHubIssue:
+def create_mock_linked_issue() -> GitHubIssue:
     return GitHubIssue(
         number=42,
         state="open",
@@ -184,7 +184,7 @@ def build_test_linked_issue() -> GitHubIssue:
 @pytest.mark.asyncio
 async def test_reviewer_worker_requests_changes_when_ci_is_not_green() -> None:
     github_client = FakeGitHubClient(
-        build_test_pull_request(),
+        create_mock_pull_request(),
         check_runs=[GitHubCheckRun(id=1, name="pytest", status="completed", conclusion="failure")],
     )
     llm_client = FakeStructuredLLMClient([])
@@ -219,14 +219,14 @@ async def test_reviewer_worker_requests_changes_when_ci_is_not_green() -> None:
 @pytest.mark.asyncio
 async def test_reviewer_worker_approves_clean_pull_request() -> None:
     github_client = FakeGitHubClient(
-        build_test_pull_request(),
+        create_mock_pull_request(),
         diff="diff --git a/src/loop_troop/reviewer.py b/src/loop_troop/reviewer.py",
         files=[
             GitHubPullRequestFile(filename="src/loop_troop/reviewer.py"),
             GitHubPullRequestFile(filename="tests/test_reviewer.py"),
         ],
         check_runs=[GitHubCheckRun(id=1, name="pytest", status="completed", conclusion="success")],
-        linked_issue=build_test_linked_issue(),
+        linked_issue=create_mock_linked_issue(),
         linked_issue_comments=[GitHubIssueComment(id=3, body="Please keep the review strict.", user={"login": "octocat"})],
     )
     hydrator = FakeContextHydrator("hydrated review context")
@@ -282,11 +282,11 @@ async def test_reviewer_worker_approves_clean_pull_request() -> None:
 @pytest.mark.asyncio
 async def test_reviewer_worker_requests_changes_for_adr_violations() -> None:
     github_client = FakeGitHubClient(
-        build_test_pull_request(),
+        create_mock_pull_request(),
         diff="diff --git a/src/loop_troop/core/github_client.py b/src/loop_troop/core/github_client.py",
         files=[GitHubPullRequestFile(filename="src/loop_troop/core/github_client.py")],
         check_runs=[GitHubCheckRun(id=1, name="pytest", status="completed", conclusion="success")],
-        linked_issue=build_test_linked_issue(),
+        linked_issue=create_mock_linked_issue(),
     )
     llm_client = FakeStructuredLLMClient(
         [
@@ -320,11 +320,11 @@ async def test_reviewer_worker_requests_changes_for_adr_violations() -> None:
 @pytest.mark.asyncio
 async def test_reviewer_worker_flags_tautological_tests_in_review_comments() -> None:
     github_client = FakeGitHubClient(
-        build_test_pull_request(),
+        create_mock_pull_request(),
         diff="diff --git a/tests/test_example.py b/tests/test_example.py",
         files=[GitHubPullRequestFile(filename="tests/test_example.py")],
         check_runs=[GitHubCheckRun(id=1, name="pytest", status="completed", conclusion="success")],
-        linked_issue=build_test_linked_issue(),
+        linked_issue=create_mock_linked_issue(),
     )
     llm_client = FakeStructuredLLMClient(
         [
@@ -370,7 +370,7 @@ async def test_reviewer_worker_flags_tautological_tests_in_review_comments() -> 
 @pytest.mark.asyncio
 async def test_reviewer_worker_rejects_bake_off_pull_requests_for_human_review() -> None:
     github_client = FakeGitHubClient(
-        build_test_pull_request(title="[BAKE-OFF] feat: compare models"),
+        create_mock_pull_request(title="[BAKE-OFF] feat: compare models"),
         check_runs=[GitHubCheckRun(id=1, name="pytest", status="completed", conclusion="success")],
     )
     worker = ReviewerWorker(

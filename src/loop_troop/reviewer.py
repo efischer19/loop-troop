@@ -450,7 +450,7 @@ class ReviewerWorker:
     def _blocking_check_runs(check_runs: list[GitHubCheckRun]) -> list[GitHubCheckRun]:
         blocking = []
         for check_run in check_runs:
-            conclusion = check_run.conclusion.lower() if check_run.conclusion else None
+            conclusion = check_run.conclusion.lower() if isinstance(check_run.conclusion, str) else None
             if conclusion is None or conclusion in BLOCKING_CHECK_RUN_CONCLUSIONS:
                 blocking.append(check_run)
         return blocking
