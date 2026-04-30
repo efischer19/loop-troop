@@ -49,11 +49,13 @@ class MetricsCollector:
         Returns a tuple of (retrying, get_stats) where get_stats() returns
         (instructor_retries, validation_errors).
         """
-        retries_box: list[int] = [0]
+        total_calls_box: list[int] = [0]
         validation_errors: list[str] = []
 
+        def _before_attempt(retry_state: tenacity.RetryCallState) -> None:
+            total_calls_box[0] = retry_state.attempt_number
+
         def _after_retry(retry_state: tenacity.RetryCallState) -> None:
-            retries_box[0] = retry_state.attempt_number
             if retry_state.outcome is not None and retry_state.outcome.failed:
                 exc = retry_state.outcome.exception()
                 if exc is not None:
@@ -61,12 +63,13 @@ class MetricsCollector:
 
         retrying = tenacity.Retrying(
             stop=tenacity.stop_after_attempt(max_retries),
+            before=_before_attempt,
             after=_after_retry,
             reraise=True,
         )
 
         def get_stats() -> tuple[int, list[str]]:
-            return retries_box[0], list(validation_errors)
+            return max(0, total_calls_box[0] - 1), list(validation_errors)
 
         return retrying, get_stats
 

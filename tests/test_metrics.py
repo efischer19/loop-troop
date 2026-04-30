@@ -173,7 +173,8 @@ def test_metrics_collector_make_retry_tracker_all_fail() -> None:
         retrying(_always_fails)
 
     retries, errors = get_stats()
-    assert retries == 2
+    # 2 total attempts with stop_after_attempt(2) → 1 retry (2nd call was the retry)
+    assert retries == 1
     assert len(errors) == 2
 
 

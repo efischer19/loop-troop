@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -145,6 +144,11 @@ class LLMClient:
                         model_name=prepared.model_name,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
+                        # TTFT requires Ollama streaming mode (stream=True).  Non-streaming
+                        # JSON-mode calls (the default for structured outputs) cannot measure
+                        # time-to-first-token, so this is always null here.  A follow-up can
+                        # add a streaming code path that records the monotonic elapsed time
+                        # between request start and first chunk arrival.
                         ttft_ms=None,
                         total_latency_ms=latency_ms,
                         instructor_retries=retries,
