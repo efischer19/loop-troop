@@ -22,6 +22,7 @@ test = [
 
 [project.scripts]
 loop-troop-daemon = "loop_troop.daemon:main"
+loop-troop-eval = "loop_troop.eval:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
