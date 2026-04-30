@@ -215,6 +215,11 @@ class Dispatcher:
     async def _dispatch_event(self, event: LoggedEvent) -> DispatchOutcome:
         owner, repo = self._split_repo(event.repo)
         issue_number = self._issue_number_from_event(event)
+
+        # Ghost-run events bypass GitHub label checks and LLM classification.
+        if event.payload.get("ghost_run"):
+            return self._dispatch_ghost_run(event, issue_number=issue_number)
+
         issue = await self._github_client.get_issue(owner, repo, issue_number)
         current_label = self._loop_label_from_issue(issue)
         is_pull_request_event = self._is_pull_request_event(event)
@@ -290,6 +295,55 @@ class Dispatcher:
             event_id=event.event_id,
             status="dispatched",
             reason=f"Dispatched to {decision.target_profile.tier.value}.",
+            decision=decision,
+        )
+
+    def _dispatch_ghost_run(
+        self,
+        event: LoggedEvent,
+        *,
+        issue_number: int,
+    ) -> DispatchOutcome:
+        """Fast-path for synthetic ghost-run events.
+
+        Bypasses GitHub label checks and LLM classification.  Uses the model
+        name embedded in the event payload and marks the resulting
+        :class:`DispatchDecision` with ``bake_off=True`` so downstream workers
+        open a draft ``[BAKE-OFF]`` PR instead of a regular one.
+        """
+        ghost_model = event.payload.get("ghost_model")
+        if not ghost_model:
+            self._shadow_log.mark_failed(event.event_id)
+            return DispatchOutcome(
+                event_id=event.event_id,
+                status="failed",
+                reason="Ghost-run event is missing the 'ghost_model' field.",
+            )
+
+        reasoning = f"Ghost run: replay issue #{issue_number} with model {ghost_model}."
+        decision = DispatchDecision(
+            event_id=event.event_id,
+            event_type=EventType(event.event_type),
+            target_profile=TargetExecutionProfile(
+                tier=TIER_BY_ROUTE[DispatchRoute.CODER],
+                model_name=ghost_model,
+                reasoning=reasoning,
+            ),
+            label_action=DispatchLabelAction(
+                action=LabelActionType.ADD,
+                label_name=WorkflowLabel.READY.value,
+            ),
+            reasoning=reasoning,
+            bake_off=True,
+        )
+        self._shadow_log.mark_dispatched(
+            event.event_id,
+            dispatch_target=f"{decision.target_profile.tier.value}:{ghost_model}",
+        )
+        return DispatchOutcome(
+            event_id=event.event_id,
+            status="dispatched",
+            reason=f"Ghost run dispatched to {decision.target_profile.tier.value} with model {ghost_model}.",
             decision=decision,
         )
 
