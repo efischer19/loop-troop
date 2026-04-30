@@ -21,6 +21,7 @@ test = [
 ]
 
 [project.scripts]
+loop-troop = "loop_troop.replay:main"
 loop-troop-daemon = "loop_troop.daemon:main"
 loop-troop-eval = "loop_troop.eval:main"
 
