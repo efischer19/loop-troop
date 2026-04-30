@@ -37,6 +37,14 @@ REVIEW_PROMPT = (
 ISSUE_REFERENCE_PATTERN = re.compile(r"#(?P<number>[0-9]+)")
 CHECKLIST_PATTERN = re.compile(r"^\s*[-*]\s*\[(?P<done>[ xX])\]\s+(?P<text>.+)$")
 MAX_DIFF_TOKENS = 4_000
+BLOCKING_CHECK_RUN_CONCLUSIONS = {
+    "failure",
+    "cancelled",
+    "timed_out",
+    "action_required",
+    "startup_failure",
+    "stale",
+}
 
 
 class ReviewerGitHubClient(Protocol):
@@ -389,7 +397,7 @@ class ReviewerWorker:
         marker = "\n[TRUNCATED]"
         marker_tokens = estimate_token_count(marker)
         available_tokens = max_tokens - marker_tokens
-        if available_tokens < 1:
+        if available_tokens <= 0:
             return marker.lstrip()
         cutoff = token_spans[available_tokens - 1].end()
         return f"{diff[:cutoff].rstrip()}{marker}"
@@ -443,7 +451,7 @@ class ReviewerWorker:
         blocking = []
         for check_run in check_runs:
             conclusion = (check_run.conclusion or "").lower() or None
-            if conclusion in {None, "failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}:
+            if conclusion is None or conclusion in BLOCKING_CHECK_RUN_CONCLUSIONS:
                 blocking.append(check_run)
         return blocking
 
