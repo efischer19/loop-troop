@@ -6,11 +6,12 @@ import inspect
 import re
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from loop_troop.core.adr_loader import ADRLoader
 from loop_troop.core.context_hydrator import ContextHydrator
@@ -18,6 +19,7 @@ from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHu
 from loop_troop.core.llm_client import LLMClient
 from loop_troop.core.schemas import CodePatch, TargetExecutionProfile
 from loop_troop.core.workspace_manager import WorkspaceManager
+from loop_troop.docker_sandbox import DockerSandbox, SandboxResult
 from loop_troop.execution import WorkerTier
 
 from .dispatcher import WorkflowLabel
@@ -32,6 +34,16 @@ CHECKLIST_ITEM_PATTERN = re.compile(r"^\s*[-*]\s*\[(?P<state>[ xX!])\]\s+(?P<tex
 FILES_PATTERN = re.compile(r"^\s*-\s*Files:\s*(?P<files>.+)$")
 TESTS_PATTERN = re.compile(r"^\s*-\s*Tests required:\s*(?P<tests>.+)$")
 CHECKLIST_STATE_PATTERN = re.compile(r"^(\s*[-*]\s*\[)[ xX!](\]\s+.+)$")
+
+# 8B error extraction: truncate raw output to ~500 tokens before sending to the small model,
+# then use its ~200-token summary in the 35B fix prompt.
+_ERROR_EXTRACTION_INPUT_MAX_CHARS = 2000
+_ERROR_SUMMARY_MAX_CHARS = 800
+
+_TAUTOLOGICAL_TEST_MESSAGE = (
+    "This test passes without implementation — write a stricter test that validates "
+    "the actual behavior described in the test instructions."
+)
 
 
 class CoderGitHubClient(Protocol):
@@ -80,6 +92,15 @@ class StructuredLLMClient(Protocol):
     def complete_structured(self, **kwargs: Any) -> Any: ...
 
 
+class ErrorSummary(BaseModel):
+    """Structured error summary produced by the 8B extraction subflow."""
+
+    relevant_lines: list[str]
+    error_type: str
+    root_cause: str
+    suggested_fix_area: str
+
+
 @dataclass(frozen=True, slots=True)
 class ParsedChecklistItem:
     comment_id: int
@@ -97,6 +118,13 @@ class InnerLoopResult:
     success: bool
     mode: str
     failure_summary: str | None = None
+    attempts: int = 1
+    first_attempt_passed: bool = False
+    total_sandbox_time_seconds: float = 0.0
+    tdd_mode: bool = False
+    tautological_test_rejections: int = 0
+    final_status: str = "pass"
+    final_code_patch: CodePatch | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,12 +138,43 @@ class CoderOutcome:
 
 
 class InnerLoop:
+    """Orchestrates the generate-test-fix cycle inside the Docker sandbox.
+
+    Supports two execution modes:
+    - **Standard mode** (``requires_test: false``): apply code, run tests, retry with
+      LLM-generated fixes up to ``max_iterations`` times.
+    - **TDD mode** (``requires_test: true``): two-phase Red-Green pipeline.
+      Phase 1 asserts the test *fails* without implementation (catching tautological
+      tests).  Phase 2 asserts the test *passes* with the full implementation, retrying
+      up to ``max_iterations`` times.
+
+    When the sandbox returns a failing test output an **8B model subflow** extracts
+    the relevant error lines before they are fed back into the fix prompt for the 35B
+    model.
+    """
+
+    # Directory names that indicate a path is a test directory.
+    _TEST_DIRS: frozenset[str] = frozenset({"tests", "test"})
+    # Filename prefixes / suffixes that identify test files regardless of extension.
+    _TEST_FILENAME_PREFIX: str = "test_"
+    _TEST_FILENAME_SUFFIX: str = "_test."
+
     def __init__(
         self,
         *,
+        docker_sandbox: DockerSandbox | None = None,
+        llm_client: StructuredLLMClient | None = None,
+        max_iterations: int = 3,
         runner: Any = subprocess.run,
+        error_extraction_model_override: str | None = None,
+        fix_model_override: str | None = None,
     ) -> None:
+        self._docker_sandbox = docker_sandbox
+        self._llm_client = llm_client
+        self._max_iterations = max_iterations
         self._runner = runner
+        self._error_extraction_model_override = error_extraction_model_override
+        self._fix_model_override = fix_model_override
 
     async def run(
         self,
@@ -124,20 +183,415 @@ class InnerLoop:
         checklist_item: ParsedChecklistItem,
         code_patch: CodePatch,
     ) -> InnerLoopResult:
-        mode = "tdd" if checklist_item.requires_test else "standard"
-        if not checklist_item.requires_test:
-            return InnerLoopResult(success=True, mode=mode)
-
-        completed = self._runner(
-            shlex.split(code_patch.test_command),
-            cwd=Path(repo_path),
-            capture_output=True,
-            text=True,
+        """Run the inner loop for the given checklist item and initial code patch."""
+        repo = Path(repo_path)
+        if checklist_item.requires_test:
+            return await self._run_tdd(
+                repo_path=repo,
+                checklist_item=checklist_item,
+                code_patch=code_patch,
+            )
+        return await self._run_standard(
+            repo_path=repo,
+            checklist_item=checklist_item,
+            code_patch=code_patch,
         )
-        output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
-        if completed.returncode == 0:
-            return InnerLoopResult(success=True, mode=mode)
-        return InnerLoopResult(success=False, mode=mode, failure_summary=output or "Build/test cycle failed.")
+
+    # ------------------------------------------------------------------
+    # Standard mode
+    # ------------------------------------------------------------------
+
+    async def _run_standard(
+        self,
+        *,
+        repo_path: Path,
+        checklist_item: ParsedChecklistItem,
+        code_patch: CodePatch,
+    ) -> InnerLoopResult:
+        current_patch = code_patch
+        total_time = 0.0
+        last_error_summary: str = "Build/test cycle failed."
+
+        for attempt in range(1, self._max_iterations + 1):
+            if attempt > 1:
+                self._apply_files(repo_path, current_patch)
+
+            result = self._execute_test(repo_path, current_patch.test_command)
+            total_time += result.duration_seconds
+
+            if result.timed_out:
+                return InnerLoopResult(
+                    success=False,
+                    mode="standard",
+                    failure_summary="Sandbox timed out.",
+                    attempts=attempt,
+                    first_attempt_passed=False,
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=False,
+                    tautological_test_rejections=0,
+                    final_status="fail",
+                    final_code_patch=current_patch,
+                )
+
+            if result.exit_code == 0:
+                return InnerLoopResult(
+                    success=True,
+                    mode="standard",
+                    attempts=attempt,
+                    first_attempt_passed=(attempt == 1),
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=False,
+                    tautological_test_rejections=0,
+                    final_status="pass",
+                    final_code_patch=current_patch,
+                )
+
+            last_error_summary = await self._extract_error_summary(result)
+
+            if attempt < self._max_iterations and self._llm_client is not None:
+                try:
+                    current_patch = self._generate_fix_patch(
+                        checklist_item=checklist_item,
+                        error_summary=last_error_summary,
+                        code_patch=current_patch,
+                    )
+                except Exception:
+                    return InnerLoopResult(
+                        success=False,
+                        mode="standard",
+                        failure_summary=last_error_summary,
+                        attempts=attempt,
+                        first_attempt_passed=False,
+                        total_sandbox_time_seconds=total_time,
+                        tdd_mode=False,
+                        tautological_test_rejections=0,
+                        final_status="fail",
+                        final_code_patch=current_patch,
+                    )
+            else:
+                # No LLM client or last iteration — cannot generate a fix.
+                return InnerLoopResult(
+                    success=False,
+                    mode="standard",
+                    failure_summary=last_error_summary,
+                    attempts=attempt,
+                    first_attempt_passed=False,
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=False,
+                    tautological_test_rejections=0,
+                    final_status="fail",
+                    final_code_patch=current_patch,
+                )
+
+        # Should never reach here; all paths above return.
+        return InnerLoopResult(  # pragma: no cover
+            success=False,
+            mode="standard",
+            failure_summary=last_error_summary,
+            attempts=self._max_iterations,
+            first_attempt_passed=False,
+            total_sandbox_time_seconds=total_time,
+            tdd_mode=False,
+            tautological_test_rejections=0,
+            final_status="fail",
+            final_code_patch=current_patch,
+        )
+
+    # ------------------------------------------------------------------
+    # TDD mode
+    # ------------------------------------------------------------------
+
+    async def _run_tdd(
+        self,
+        *,
+        repo_path: Path,
+        checklist_item: ParsedChecklistItem,
+        code_patch: CodePatch,
+    ) -> InnerLoopResult:
+        test_files, impl_files = self._partition_files(code_patch)
+        total_time = 0.0
+
+        # ------------------------------------------------------------------
+        # Phase 1 (Red): run tests with impl files emptied — they MUST fail.
+        # ------------------------------------------------------------------
+        if impl_files:
+            for fc in impl_files:
+                path = repo_path / fc.path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+
+            phase1 = self._execute_test(repo_path, code_patch.test_command)
+            total_time += phase1.duration_seconds
+
+            # Restore impl files before doing anything else.
+            for fc in impl_files:
+                (repo_path / fc.path).write_text(fc.content)
+
+            if phase1.timed_out:
+                return InnerLoopResult(
+                    success=False,
+                    mode="tdd",
+                    failure_summary="Sandbox timed out during TDD Red phase.",
+                    attempts=1,
+                    first_attempt_passed=False,
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=True,
+                    tautological_test_rejections=0,
+                    final_status="fail",
+                    final_code_patch=code_patch,
+                )
+
+            if phase1.exit_code == 0:
+                # Test passes without implementation — tautological test.
+                return InnerLoopResult(
+                    success=False,
+                    mode="tdd",
+                    failure_summary=_TAUTOLOGICAL_TEST_MESSAGE,
+                    attempts=1,
+                    first_attempt_passed=False,
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=True,
+                    tautological_test_rejections=1,
+                    final_status="fail",
+                    final_code_patch=code_patch,
+                )
+
+        # ------------------------------------------------------------------
+        # Phase 2 (Green): run tests with the full implementation — they MUST pass.
+        # ------------------------------------------------------------------
+        current_patch = code_patch
+        last_error_summary: str = "Build/test cycle failed."
+        for attempt in range(1, self._max_iterations + 1):
+            if attempt > 1:
+                self._apply_files(repo_path, current_patch)
+
+            phase2 = self._execute_test(repo_path, current_patch.test_command)
+            total_time += phase2.duration_seconds
+
+            if phase2.timed_out:
+                return InnerLoopResult(
+                    success=False,
+                    mode="tdd",
+                    failure_summary="Sandbox timed out during TDD Green phase.",
+                    attempts=attempt,
+                    first_attempt_passed=False,
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=True,
+                    tautological_test_rejections=0,
+                    final_status="fail",
+                    final_code_patch=current_patch,
+                )
+
+            if phase2.exit_code == 0:
+                return InnerLoopResult(
+                    success=True,
+                    mode="tdd",
+                    attempts=attempt,
+                    first_attempt_passed=(attempt == 1),
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=True,
+                    tautological_test_rejections=0,
+                    final_status="pass",
+                    final_code_patch=current_patch,
+                )
+
+            last_error_summary = await self._extract_error_summary(phase2)
+
+            if attempt < self._max_iterations and self._llm_client is not None:
+                try:
+                    current_patch = self._generate_fix_patch(
+                        checklist_item=checklist_item,
+                        error_summary=last_error_summary,
+                        code_patch=current_patch,
+                    )
+                except Exception:
+                    return InnerLoopResult(
+                        success=False,
+                        mode="tdd",
+                        failure_summary=last_error_summary,
+                        attempts=attempt,
+                        first_attempt_passed=False,
+                        total_sandbox_time_seconds=total_time,
+                        tdd_mode=True,
+                        tautological_test_rejections=0,
+                        final_status="fail",
+                        final_code_patch=current_patch,
+                    )
+            else:
+                # No LLM client or last iteration — cannot generate a fix.
+                return InnerLoopResult(
+                    success=False,
+                    mode="tdd",
+                    failure_summary=last_error_summary,
+                    attempts=attempt,
+                    first_attempt_passed=False,
+                    total_sandbox_time_seconds=total_time,
+                    tdd_mode=True,
+                    tautological_test_rejections=0,
+                    final_status="fail",
+                    final_code_patch=current_patch,
+                )
+
+        # Should never reach here; all paths above return.
+        return InnerLoopResult(  # pragma: no cover
+            success=False,
+            mode="tdd",
+            failure_summary=last_error_summary,
+            attempts=self._max_iterations,
+            first_attempt_passed=False,
+            total_sandbox_time_seconds=total_time,
+            tdd_mode=True,
+            tautological_test_rejections=0,
+            final_status="fail",
+            final_code_patch=current_patch,
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _execute_test(self, repo_path: Path, test_command: str) -> SandboxResult:
+        """Run *test_command* via the Docker sandbox (or subprocess fallback)."""
+        args = shlex.split(test_command)
+        if self._docker_sandbox is not None:
+            return self._docker_sandbox.run(args)
+
+        start = time.monotonic()
+        try:
+            completed = self._runner(
+                args,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={},
+            )
+            duration = time.monotonic() - start
+            return SandboxResult(
+                exit_code=completed.returncode,
+                stdout=completed.stdout or "",
+                stderr=completed.stderr or "",
+                duration_seconds=duration,
+                timed_out=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration = time.monotonic() - start
+            stdout = exc.stdout
+            stderr = exc.stderr
+            return SandboxResult(
+                exit_code=-1,
+                stdout=(stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout or ""),
+                stderr=(stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr or ""),
+                duration_seconds=duration,
+                timed_out=True,
+            )
+
+    async def _extract_error_summary(self, result: SandboxResult) -> str:
+        """Use the 8B model to extract relevant error lines from raw sandbox output."""
+        raw = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
+
+        if not self._llm_client or not raw:
+            return raw[:_ERROR_EXTRACTION_INPUT_MAX_CHARS] or "Build/test cycle failed."
+
+        truncated = raw[:_ERROR_EXTRACTION_INPUT_MAX_CHARS]
+        try:
+            extracted: ErrorSummary = self._llm_client.complete_structured(
+                tier=WorkerTier.T1,
+                response_model=ErrorSummary,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an error analysis assistant. "
+                            "Extract the key error information from the test output."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Test output:\n\n{truncated}\n\nExtract the error summary.",
+                    },
+                ],
+                model_override=self._error_extraction_model_override,
+                temperature=0,
+            )
+            lines = [
+                f"Error type: {extracted.error_type}",
+                f"Root cause: {extracted.root_cause}",
+                f"Suggested fix area: {extracted.suggested_fix_area}",
+            ]
+            if extracted.relevant_lines:
+                lines.append("Relevant lines:")
+                lines.extend(f"  {line}" for line in extracted.relevant_lines[:10])
+            return "\n".join(lines)[:_ERROR_SUMMARY_MAX_CHARS]
+        except Exception:
+            return truncated or "Build/test cycle failed."
+
+    def _generate_fix_patch(
+        self,
+        *,
+        checklist_item: ParsedChecklistItem,
+        error_summary: str,
+        code_patch: CodePatch,
+    ) -> CodePatch:
+        """Call the 35B model to generate a corrected code patch."""
+        files_listing = "\n\n".join(
+            f"=== {fc.path} ===\n{fc.content}" for fc in code_patch.files_changed
+        )
+        files_scope = ", ".join(checklist_item.files_touched) or "all files in the patch"
+        fix_prompt = (
+            f"Your previous code failed. Here is the error summary:\n"
+            f"{error_summary[:_ERROR_SUMMARY_MAX_CHARS]}\n\n"
+            f"Here is your code:\n{files_listing}\n\n"
+            f"Fix the code to pass the tests. "
+            f"Only modify the files listed in the checklist item: {files_scope}."
+        )
+        return self._llm_client.complete_structured(  # type: ignore[union-attr]
+            tier=WorkerTier.T2,
+            response_model=CodePatch,
+            messages=[
+                {"role": "system", "content": CODER_PROMPT},
+                {"role": "user", "content": fix_prompt},
+            ],
+            model_override=self._fix_model_override,
+            temperature=0,
+        )
+
+    @staticmethod
+    def _apply_files(repo_path: Path, code_patch: CodePatch) -> None:
+        """Write all files from *code_patch* to *repo_path*."""
+        for fc in code_patch.files_changed:
+            path = repo_path / fc.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(fc.content)
+
+    @staticmethod
+    def _is_test_file(path: str) -> bool:
+        """Return True if *path* follows a standard test-file naming convention.
+
+        Matches ``test_*`` prefixes, ``*_test.*`` suffixes (language-agnostic), and
+        files nested under a ``tests/`` or ``test/`` directory.
+        """
+        parts = path.replace("\\", "/").split("/")
+        filename = parts[-1]
+        return (
+            filename.startswith(InnerLoop._TEST_FILENAME_PREFIX)
+            or (InnerLoop._TEST_FILENAME_SUFFIX in filename)
+            or any(part in InnerLoop._TEST_DIRS for part in parts[:-1])
+        )
+
+    @staticmethod
+    def _partition_files(
+        code_patch: CodePatch,
+    ) -> tuple[list[Any], list[Any]]:
+        """Split *code_patch.files_changed* into (test_files, impl_files)."""
+        test_files = []
+        impl_files = []
+        for fc in code_patch.files_changed:
+            if InnerLoop._is_test_file(fc.path):
+                test_files.append(fc)
+            else:
+                impl_files.append(fc)
+        return test_files, impl_files
 
 
 class PRManager:
@@ -243,6 +697,13 @@ class CoderWorker:
                 code_patch=code_patch,
             )
             if inner_loop_result.success:
+                # If InnerLoop generated a fix internally (attempts > 1), apply and
+                # commit the final patch so the branch reflects the fixed state.
+                final_patch = inner_loop_result.final_code_patch
+                if final_patch is not None and inner_loop_result.attempts > 1:
+                    self._apply_code_patch(repo_path=repo_path, code_patch=final_patch)
+                    self._workspace_manager.commit_all(repo_path, final_patch.commit_message)
+
                 self._workspace_manager.push_branch(repo_path, branch_name)
                 pull_request = await self._pr_manager.open_pull_request(
                     owner=owner,
@@ -524,6 +985,7 @@ class CoderWorker:
 __all__ = [
     "CoderOutcome",
     "CoderWorker",
+    "ErrorSummary",
     "InnerLoop",
     "InnerLoopResult",
     "PRManager",
