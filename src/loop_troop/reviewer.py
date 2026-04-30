@@ -467,7 +467,7 @@ class ReviewerWorker:
 
     @staticmethod
     def _is_bake_off(pull_request: GitHubPullRequest) -> bool:
-        return pull_request.title.startswith("[BAKE-OFF]")
+        return (pull_request.title or "").startswith("[BAKE-OFF]")
 
     @staticmethod
     def _updated_labels(labels: list[GitHubLabel], target_label: WorkflowLabel) -> list[str]:
