@@ -178,6 +178,16 @@ class CodePatch(BaseModel):
     commit_message: str = Field(min_length=1)
 
 
+class ResolvedFile(BaseModel):
+    path: str = Field(min_length=1)
+    content: str
+
+
+class ConflictResolution(BaseModel):
+    resolved_files: list[ResolvedFile]
+    resolution_rationale: str = Field(min_length=1)
+
+
 class ReviewComment(BaseModel):
     path: str = Field(min_length=1)
     body: str = Field(min_length=1)
@@ -203,12 +213,14 @@ __all__ = [
     "ArchitectPlan",
     "ChecklistItem",
     "CodePatch",
+    "ConflictResolution",
     "DispatchDecision",
     "DispatchLabelAction",
     "EventType",
     "FeaturePlan",
     "FileChange",
     "LabelActionType",
+    "ResolvedFile",
     "ReviewComment",
     "ReviewVerdict",
     "ReviewVerdictType",

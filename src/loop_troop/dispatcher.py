@@ -39,6 +39,7 @@ class WorkflowLabel(str, Enum):
     READY = "loop: ready"
     NEEDS_HELP = "loop: needs-help"
     NEEDS_REVIEW = "loop: needs-review"
+    MERGE_CONFLICT = "loop: merge-conflict"
     EPIC_TRACKING = "loop: epic-tracking"
     APPROVED = "loop: approved"
     CHANGES_REQUESTED = "loop: changes-requested"
