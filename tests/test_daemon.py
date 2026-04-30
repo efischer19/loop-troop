@@ -43,6 +43,16 @@ class FakeStructuredLLMClient:
         return response
 
 
+class FakeADRLoader:
+    def build_context(self, _repo_path) -> str:
+        return "accepted ADRs"
+
+
+class FakeContextHydrator:
+    def hydrate(self, **_kwargs) -> str:
+        return "hydrated context"
+
+
 class FailingArchitectWorker:
     async def handle_issue(self, **_kwargs) -> None:
         raise RuntimeError("architect worker exploded")
@@ -309,6 +319,8 @@ async def test_sync_daemon_executes_architect_and_reviewer_lifecycle_with_mocked
             comment = GitHubIssueComment(id=1000 + len(issue_comments[2]), body=payload["body"])
             issue_comments[2].append(comment)
             return httpx.Response(201, json=comment.model_dump())
+        if request.url.path.endswith("/issues/3/comments"):
+            return httpx.Response(200, json=[])
         if request.url.path.endswith("/issues/1") and request.method == "GET":
             return httpx.Response(200, json=issue_state[1].model_dump())
         if request.url.path.endswith("/issues/2") and request.method == "GET":
@@ -386,6 +398,8 @@ async def test_sync_daemon_executes_architect_and_reviewer_lifecycle_with_mocked
                 ),
             ]
         ),
+        context_hydrator=FakeContextHydrator(),
+        adr_loader=FakeADRLoader(),
     )
     reviewer_worker = ReviewerWorker(
         github_client=github_client,
@@ -397,6 +411,8 @@ async def test_sync_daemon_executes_architect_and_reviewer_lifecycle_with_mocked
                 )
             ]
         ),
+        context_hydrator=FakeContextHydrator(),
+        adr_loader=FakeADRLoader(),
     )
     daemon = SyncDaemon(
         config=DaemonConfig(
@@ -426,7 +442,7 @@ async def test_sync_daemon_executes_architect_and_reviewer_lifecycle_with_mocked
     try:
         statuses = dict(
             reopened._connection.execute(
-                "SELECT event_id, status FROM event_state ORDER BY id ASC"
+                "SELECT event_id, status FROM event_state ORDER BY event_id ASC"
             ).fetchall()
         )
         pr_event_id = next(event_id for event_id in statuses if event_id.startswith("pull_request:503:"))
@@ -559,7 +575,7 @@ async def test_sync_daemon_marks_architect_and_reviewer_failures_without_crashin
     try:
         statuses = dict(
             reopened._connection.execute(
-                "SELECT event_id, status FROM event_state ORDER BY id ASC"
+                "SELECT event_id, status FROM event_state ORDER BY event_id ASC"
             ).fetchall()
         )
         architect_event = reopened.get_event("401")

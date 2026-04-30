@@ -138,9 +138,12 @@ async def test_poll_pull_requests_logs_unique_opened_and_updated_events(monkeypa
             await client.poll_pull_requests("octo", "repo")
             await client.poll_pull_requests("octo", "repo")
 
-        rows = shadow_log._connection.execute(
+        rows = [
+            tuple(row)
+            for row in shadow_log._connection.execute(
             "SELECT event_id, event_type FROM raw_events ORDER BY id ASC"
-        ).fetchall()
+            ).fetchall()
+        ]
         assert rows == [
             ("pull_request:41:2026-04-30T10:00:00Z", "opened"),
             ("pull_request:41:2026-04-30T11:00:00Z", "edited"),
