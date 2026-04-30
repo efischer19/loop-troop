@@ -65,6 +65,7 @@ class GitHubPullRequest(BaseModel):
     user: GitHubUser | None = None
     labels: list[GitHubLabel] = Field(default_factory=list)
     head: GitHubPullRequestHead | None = None
+    draft: bool = False
 
 
 class GitHubIssueComment(BaseModel):
@@ -137,6 +138,10 @@ class InMemoryETagStore:
 
     def set(self, key: str, value: str) -> None:
         self._values[key] = value
+
+
+class CheckboxConflictError(Exception):
+    """Raised when a concurrent comment modification is detected (HTTP 412 Precondition Failed)."""
 
 
 class GitHubClient:
@@ -368,6 +373,20 @@ class GitHubClient:
         response.raise_for_status()
         return GitHubIssueComment.model_validate(response.json())
 
+    async def get_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> tuple[GitHubIssueComment, str | None]:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        etag = response.headers.get("ETag")
+        return GitHubIssueComment.model_validate(response.json()), etag
+
     async def update_issue_comment(
         self,
         owner: str,
@@ -375,12 +394,20 @@ class GitHubClient:
         comment_id: int,
         *,
         body: str,
+        if_match: str | None = None,
     ) -> GitHubIssueComment:
+        headers = dict(self._default_headers)
+        if if_match is not None:
+            headers["If-Match"] = if_match
         response = await self._client.patch(
             f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
             json={"body": body},
-            headers=self._default_headers,
+            headers=headers,
         )
+        if if_match is not None and response.status_code == 412:
+            raise CheckboxConflictError(
+                f"Comment {comment_id} was modified concurrently (ETag mismatch)."
+            )
         response.raise_for_status()
         return GitHubIssueComment.model_validate(response.json())
 
@@ -413,16 +440,43 @@ class GitHubClient:
         head: str,
         base: str,
         body: str | None = None,
+        draft: bool = False,
     ) -> GitHubPullRequest:
         payload: dict[str, Any] = {
             "title": title,
             "head": head,
             "base": base,
+            "draft": draft,
         }
         if body is not None:
             payload["body"] = body
         response = await self._client.post(
             f"/repos/{owner}/{repo}/pulls",
+            json=payload,
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubPullRequest.model_validate(response.json())
+
+    async def update_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        draft: bool | None = None,
+    ) -> GitHubPullRequest:
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if body is not None:
+            payload["body"] = body
+        if draft is not None:
+            payload["draft"] = draft
+        response = await self._client.patch(
+            f"/repos/{owner}/{repo}/pulls/{pull_number}",
             json=payload,
             headers=self._default_headers,
         )

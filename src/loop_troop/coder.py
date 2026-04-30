@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from loop_troop.core.adr_loader import ADRLoader
 from loop_troop.core.context_hydrator import ContextHydrator
 from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHubLabel, GitHubPullRequest
+from loop_troop.core.github_client import CheckboxConflictError
 from loop_troop.core.llm_client import LLMClient
 from loop_troop.core.schemas import CodePatch, ConflictResolution, FileChange, TargetExecutionProfile
 from loop_troop.core.workspace_manager import WorkspaceManager
@@ -58,6 +59,13 @@ class CoderGitHubClient(Protocol):
         per_page: int = 100,
     ) -> list[GitHubIssueComment]: ...
 
+    async def get_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> tuple[GitHubIssueComment, str | None]: ...
+
     async def update_issue_comment(
         self,
         owner: str,
@@ -65,6 +73,7 @@ class CoderGitHubClient(Protocol):
         comment_id: int,
         *,
         body: str,
+        if_match: str | None = None,
     ) -> GitHubIssueComment: ...
 
     async def replace_issue_labels(
@@ -85,6 +94,18 @@ class CoderGitHubClient(Protocol):
         head: str,
         base: str,
         body: str | None = None,
+        draft: bool = False,
+    ) -> GitHubPullRequest: ...
+
+    async def update_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        draft: bool | None = None,
     ) -> GitHubPullRequest: ...
 
 
@@ -595,6 +616,8 @@ class InnerLoop:
 
 
 class PRManager:
+    _MAX_CONFLICT_RETRIES: int = 3
+
     def __init__(self, *, github_client: CoderGitHubClient) -> None:
         self._github_client = github_client
 
@@ -619,6 +642,178 @@ class PRManager:
         )
         await self._github_client.replace_issue_labels(owner, repo, pull_request.number, labels=labels)
         return pull_request
+
+    async def create_pr(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        issue: GitHubIssue,
+        checklist_item: "ParsedChecklistItem",
+        branch_name: str,
+        base_branch: str,
+        bake_off: bool = False,
+        bake_off_model: str | None = None,
+    ) -> GitHubPullRequest:
+        """Create a PR for the given checklist item with the standard Loop Troop format.
+
+        When *bake_off* is True the PR is opened as a draft and the title is
+        prefixed with ``[BAKE-OFF]`` so that the Reviewer knows not to merge it.
+        """
+        title = f"#{issue.number}: {checklist_item.description}"
+        body = f"Closes #{issue.number}\n\n{checklist_item.description}"
+        draft = False
+
+        if bake_off:
+            title = f"[BAKE-OFF] {title}"
+            draft = True
+
+        pull_request = await self._github_client.create_pull_request(
+            owner,
+            repo,
+            title=title,
+            body=body,
+            head=branch_name,
+            base=base_branch,
+            draft=draft,
+        )
+        await self._github_client.replace_issue_labels(
+            owner,
+            repo,
+            pull_request.number,
+            labels=[WorkflowLabel.NEEDS_REVIEW.value],
+        )
+        return pull_request
+
+    async def update_pr(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        title: str | None = None,
+        body: str | None = None,
+        draft: bool | None = None,
+    ) -> GitHubPullRequest:
+        """Update the title, body, or draft status of an existing PR."""
+        return await self._github_client.update_pull_request(
+            owner,
+            repo,
+            pr_number,
+            title=title,
+            body=body,
+            draft=draft,
+        )
+
+    async def check_checkbox(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        checklist_item: "ParsedChecklistItem",
+        issue: GitHubIssue,
+    ) -> None:
+        """Mark the checklist item as completed (``- [x]``) with ETag protection.
+
+        Re-fetches the comment before each PATCH attempt and retries up to
+        ``_MAX_CONFLICT_RETRIES`` times on HTTP 412 Precondition Failed.  When
+        all items in the checklist are now checked the issue is labelled
+        ``loop: done``.
+        """
+        updated_body = await self._update_checkbox_with_etag(
+            owner=owner,
+            repo=repo,
+            comment_id=checklist_item.comment_id,
+            description=checklist_item.description,
+            state="x",
+        )
+        if _all_items_checked(updated_body):
+            await self._github_client.replace_issue_labels(
+                owner,
+                repo,
+                issue.number,
+                labels=_pr_manager_updated_labels(issue.labels, WorkflowLabel.DONE),
+            )
+
+    async def flag_checkbox(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        checklist_item: "ParsedChecklistItem",
+    ) -> None:
+        """Mark the checklist item as failed (``- [!]``) with ETag protection.
+
+        Re-fetches and retries up to ``_MAX_CONFLICT_RETRIES`` times on
+        HTTP 412 Precondition Failed.
+        """
+        await self._update_checkbox_with_etag(
+            owner=owner,
+            repo=repo,
+            comment_id=checklist_item.comment_id,
+            description=checklist_item.description,
+            state="!",
+        )
+
+    async def _update_checkbox_with_etag(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        description: str,
+        state: str,
+    ) -> str:
+        """Fetch the comment, update the checkbox, and PATCH with If-Match.
+
+        Retries on HTTP 412 (ETag mismatch) up to ``_MAX_CONFLICT_RETRIES``
+        times, re-fetching the current body before each attempt.  Raises
+        ``CheckboxConflictError`` if all retries are exhausted.
+        """
+        for attempt in range(self._MAX_CONFLICT_RETRIES):
+            comment, etag = await self._github_client.get_issue_comment(owner, repo, comment_id)
+            body = comment.body or ""
+            updated_body = _update_checkbox_by_description(body, description, state)
+            try:
+                await self._github_client.update_issue_comment(
+                    owner,
+                    repo,
+                    comment_id,
+                    body=updated_body,
+                    if_match=etag,
+                )
+                return updated_body
+            except CheckboxConflictError:
+                if attempt >= self._MAX_CONFLICT_RETRIES - 1:
+                    raise
+        raise RuntimeError("Checkbox update retry loop exhausted unexpectedly.")
+
+
+def _update_checkbox_by_description(body: str, description: str, state: str) -> str:
+    """Return *body* with the checkbox matching *description* set to *state*."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        m = CHECKLIST_ITEM_PATTERN.match(line)
+        if m and m.group("text").strip() == description:
+            lines[i] = CHECKLIST_STATE_PATTERN.sub(rf"\1{state}\2", lines[i], count=1)
+            return "\n".join(lines)
+    return body
+
+
+def _all_items_checked(body: str) -> bool:
+    """Return True if every checklist item in *body* is checked (no ``[ ]`` items)."""
+    for line in body.splitlines():
+        m = CHECKLIST_ITEM_PATTERN.match(line)
+        if m and m.group("state") == " ":
+            return False
+    return True
+
+
+def _pr_manager_updated_labels(labels: list[GitHubLabel], target_label: WorkflowLabel) -> list[str]:
+    """Return a new labels list with all workflow labels replaced by *target_label*."""
+    updated = [label.name for label in labels if label.name not in WorkflowLabel._value2member_map_]
+    updated.append(target_label.value)
+    return updated
 
 
 class CoderWorker:

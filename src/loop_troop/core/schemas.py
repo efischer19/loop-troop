@@ -60,6 +60,7 @@ class DispatchDecision(BaseModel):
     target_profile: TargetExecutionProfile
     label_action: DispatchLabelAction
     reasoning: str = Field(min_length=1)
+    bake_off: bool = False
 
 
 class ChecklistItem(BaseModel):
