@@ -284,6 +284,8 @@ class ArchitectWorker:
     @staticmethod
     def _comment_author(comment: GitHubIssueComment) -> str:
         user = getattr(comment, "user", None)
+        if isinstance(user, dict):
+            return str(user.get("login", "unknown"))
         return getattr(user, "login", "unknown")
 
     @staticmethod

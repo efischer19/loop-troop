@@ -284,6 +284,8 @@ async def test_architect_worker_creates_macro_plan_dag_and_recursive_feature_iss
         labels=[GitHubLabel(name=WorkflowLabel.FEATURE.value), GitHubLabel(name="product")],
     )
     github_client = FakeGitHubClient(issue, [GitHubIssueComment(id=1, body="Need a clean dependency chain.")])
+    hydrator = FakeContextHydrator("unused")
+    adr_loader = FakeADRLoader("unused")
     worker = ArchitectWorker(
         github_client=github_client,
         llm_client=FakeStructuredLLMClient(
@@ -308,6 +310,8 @@ async def test_architect_worker_creates_macro_plan_dag_and_recursive_feature_iss
                 )
             ]
         ),
+        context_hydrator=hydrator,
+        adr_loader=adr_loader,
     )
 
     outcome = await worker.handle_issue(
@@ -328,3 +332,5 @@ async def test_architect_worker_creates_macro_plan_dag_and_recursive_feature_iss
     assert "- [ ] #202: Decompose the API slice (Depends on: #201)" in tracking_comment
     assert "- [ ] #203: Integration test (Depends on: #202)" in tracking_comment
     assert github_client.replaced_labels == [["product", WorkflowLabel.EPIC_TRACKING.value]]
+    assert hydrator.calls == []
+    assert adr_loader.repo_paths == []
