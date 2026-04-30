@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from loop_troop.architect import ArchitectWorker
 from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHubLabel
@@ -112,7 +113,7 @@ class FakeContextHydrator:
 
 
 def _create_rule_of_three_validation_error():
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(ValidationError) as exc_info:
         ChecklistItem(
             description="bad item",
             files_touched=["a", "b", "c", "d"],

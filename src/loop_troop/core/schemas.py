@@ -143,11 +143,13 @@ class SubIssue(BaseModel):
 
 class FeaturePlan(BaseModel):
     epic_issue_number: int = Field(ge=1)
-    sub_issues: list[SubIssue] = Field(min_length=1)
+    sub_issues: list[SubIssue]
     adr_references: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> FeaturePlan:
+        if not self.sub_issues:
+            raise ValueError("FeaturePlan must include at least one sub-issue.")
         sub_issue_count = len(self.sub_issues)
         for index, sub_issue in enumerate(self.sub_issues, start=1):
             for dependency in sub_issue.depends_on:

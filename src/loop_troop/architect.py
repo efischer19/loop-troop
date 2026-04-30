@@ -313,6 +313,8 @@ class ArchitectWorker:
     @staticmethod
     def _render_adr_comment(plan: ArchitectPlan) -> str:
         references = ", ".join(plan.adr_references) if plan.adr_references else "a new ADR"
+        if plan.adr_instructions is None:
+            raise ValueError("ADR comment rendering requires adr_instructions.")
         return "\n".join(
             [
                 "## Architect Planning Paused",
