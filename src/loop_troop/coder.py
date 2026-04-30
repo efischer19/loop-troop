@@ -1094,7 +1094,10 @@ class ConflictResolver:
         workspace = Path(repo_path)
 
         pull_request = await self._github_client.get_pull_request(owner, repo, pr_number)
-        branch_name = (pull_request.head.ref if pull_request.head else base_branch) or base_branch
+        if pull_request.head and pull_request.head.ref:
+            branch_name = pull_request.head.ref
+        else:
+            branch_name = base_branch
 
         comments = await self._github_client.list_issue_comments(owner, repo, issue_number)
         checklist_item = CoderWorker._first_unchecked_item(comments)
