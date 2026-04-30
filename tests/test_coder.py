@@ -45,6 +45,7 @@ class FakeGitHubClient:
         self.updated_pull_requests: list[dict[str, Any]] = []
         # Track (comment_id, etag) for conflict simulation
         self._conflict_on_next_update: bool = False
+        self.get_issue_comment_calls: int = 0
 
     async def get_issue(self, owner: str, repo: str, issue_number: int) -> GitHubIssue:
         assert (owner, repo, issue_number) == ("octo", "repo", self.issue.number)
@@ -67,6 +68,7 @@ class FakeGitHubClient:
         repo: str,
         comment_id: int,
     ) -> tuple[GitHubIssueComment, str | None]:
+        self.get_issue_comment_calls += 1
         for comment in self.comments:
             if comment.id == comment_id:
                 return comment, f"etag-{comment_id}"
@@ -541,7 +543,9 @@ async def test_pr_manager_check_checkbox_retries_on_conflict() -> None:
         issue=_pr_manager_issue(),
     )
 
-    # The first attempt failed (conflict), the second succeeded
+    # The conflict caused a retry: get_issue_comment was called twice (once per attempt)
+    assert github_client.get_issue_comment_calls == 2
+    # Only the second (successful) attempt produced an updated comment
     assert len(github_client.updated_comments) == 1
     _, updated_body = github_client.updated_comments[0]
     assert "- [x] Update the app entrypoint" in updated_body

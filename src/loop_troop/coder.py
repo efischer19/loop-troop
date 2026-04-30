@@ -659,6 +659,9 @@ class PRManager:
 
         When *bake_off* is True the PR is opened as a draft and the title is
         prefixed with ``[BAKE-OFF]`` so that the Reviewer knows not to merge it.
+        *bake_off_model* is the model name used in the bake-off run; it is
+        reserved for the caller to embed in the branch name before calling this
+        method (e.g. ``loop/issue-42-qwen-coder``).
         """
         title = f"#{issue.number}: {checklist_item.description}"
         body = f"Closes #{issue.number}\n\n{checklist_item.description}"
@@ -786,7 +789,6 @@ class PRManager:
             except CheckboxConflictError:
                 if attempt >= self._MAX_CONFLICT_RETRIES - 1:
                     raise
-        raise RuntimeError("Checkbox update retry loop exhausted unexpectedly.")
 
 
 def _update_checkbox_by_description(body: str, description: str, state: str) -> str:
