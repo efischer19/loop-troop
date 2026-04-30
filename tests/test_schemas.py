@@ -181,7 +181,7 @@ def test_checklist_item_requires_test_and_test_instructions_contract() -> None:
         )
 
 
-def test_architect_plan_uses_explicit_adr_resolution_path() -> None:
+def test_architect_plan_validates_adr_requirements() -> None:
     plan = ArchitectPlan(
         issue_number=55,
         checklist_items=[],

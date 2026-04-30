@@ -104,7 +104,7 @@ class ArchitectPlan(BaseModel):
     verification_strategy: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_resolution_path(self) -> ArchitectPlan:
+    def validate_adr_requirements(self) -> ArchitectPlan:
         if self.requires_adr:
             if not self.adr_instructions:
                 raise ValueError("Architect plans that require an ADR must include adr_instructions.")

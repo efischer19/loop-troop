@@ -266,7 +266,7 @@ class ArchitectWorker:
     @staticmethod
     def _format_issue_context(issue: GitHubIssue, comments: list[GitHubIssueComment]) -> str:
         rendered_comments = "\n".join(
-            f"- @{ArchitectWorker._comment_author(comment)}: {(comment.body or '').strip()}"
+            f"- @{ArchitectWorker._comment_author(comment)}: {ArchitectWorker._comment_body(comment)}"
             for comment in comments
         ) or "- (none)"
         return "\n".join(
@@ -287,6 +287,10 @@ class ArchitectWorker:
         if isinstance(user, dict):
             return str(user.get("login", "unknown"))
         return getattr(user, "login", "unknown")
+
+    @staticmethod
+    def _comment_body(comment: GitHubIssueComment) -> str:
+        return (comment.body or "").strip()
 
     @staticmethod
     def _render_checklist_comment(plan: ArchitectPlan) -> str:
