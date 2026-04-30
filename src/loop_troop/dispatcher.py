@@ -72,8 +72,12 @@ VALID_LABEL_TRANSITIONS: dict[WorkflowLabel | None, set[WorkflowLabel]] = {
         WorkflowLabel.CHANGES_REQUESTED,
     },
     WorkflowLabel.EPIC_TRACKING: {WorkflowLabel.EPIC_TRACKING, WorkflowLabel.DONE},
-    WorkflowLabel.APPROVED: {WorkflowLabel.APPROVED, WorkflowLabel.DONE},
-    WorkflowLabel.CHANGES_REQUESTED: {WorkflowLabel.CHANGES_REQUESTED, WorkflowLabel.READY},
+    WorkflowLabel.APPROVED: {WorkflowLabel.APPROVED, WorkflowLabel.NEEDS_REVIEW, WorkflowLabel.DONE},
+    WorkflowLabel.CHANGES_REQUESTED: {
+        WorkflowLabel.CHANGES_REQUESTED,
+        WorkflowLabel.NEEDS_REVIEW,
+        WorkflowLabel.READY,
+    },
     WorkflowLabel.DONE: {WorkflowLabel.DONE},
 }
 ROUTE_BY_LABEL = {
@@ -205,19 +209,21 @@ class Dispatcher:
         issue_number = self._issue_number_from_event(event)
         issue = await self._github_client.get_issue(owner, repo, issue_number)
         current_label = self._loop_label_from_issue(issue)
-        if current_label is None:
+        is_pull_request_event = self._is_pull_request_event(event)
+        target_label = WorkflowLabel.NEEDS_REVIEW if is_pull_request_event else current_label
+        if target_label is None:
             return DispatchOutcome(
                 event_id=event.event_id,
                 status="skipped",
                 reason="Issue does not have a dispatchable loop label.",
             )
 
-        expected_route = ROUTE_BY_LABEL.get(current_label)
+        expected_route = ROUTE_BY_LABEL.get(target_label)
         if expected_route is None:
             return DispatchOutcome(
                 event_id=event.event_id,
                 status="skipped",
-                reason=f"Loop label {current_label.value} is not dispatchable.",
+                reason=f"Loop label {target_label.value} is not dispatchable.",
             )
 
         blocked_dependencies = await self._blocked_dependencies(owner, repo, issue.number)
@@ -231,7 +237,7 @@ class Dispatcher:
         classification = await self._classify_with_retries(
             event=event,
             issue=issue,
-            current_label=current_label,
+            current_label=target_label,
             expected_route=expected_route,
         )
         if classification is None:
@@ -247,7 +253,6 @@ class Dispatcher:
                 f"Classifier returned route {classification.route.value}, expected {expected_route.value}."
             )
 
-        target_label = current_label
         self.validate_label_transition(current_label, target_label)
         decision = DispatchDecision(
             event_id=event.event_id,
@@ -384,3 +389,12 @@ class Dispatcher:
         labels = [label.name for label in issue.labels if label.name not in WorkflowLabel._value2member_map_]
         labels.append(target_label.value)
         return labels
+
+    @staticmethod
+    def _is_pull_request_event(event: LoggedEvent) -> bool:
+        payload = event.payload
+        return (
+            event.event_type == EventType.PULL_REQUEST.value
+            or isinstance(payload.get("pull_request"), dict)
+            or ("head" in payload and payload.get("number") is not None)
+        )

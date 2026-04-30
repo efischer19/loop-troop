@@ -90,6 +90,69 @@ async def test_poll_pull_requests_follows_pagination(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_poll_pull_requests_logs_unique_opened_and_updated_events(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "test-token")
+    shadow_log = ShadowLog(tmp_path / "shadow.db")
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 41,
+                        "number": 7,
+                        "state": "open",
+                        "title": "First PR snapshot",
+                        "created_at": "2026-04-30T10:00:00Z",
+                        "updated_at": "2026-04-30T10:00:00Z",
+                        "head": {"sha": "abc123", "ref": "feature/pr"},
+                    }
+                ],
+            ),
+            httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 41,
+                        "number": 7,
+                        "state": "open",
+                        "title": "Updated PR snapshot",
+                        "created_at": "2026-04-30T10:00:00Z",
+                        "updated_at": "2026-04-30T11:00:00Z",
+                        "head": {"sha": "def456", "ref": "feature/pr"},
+                    }
+                ],
+            ),
+        ]
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return next(responses)
+
+    transport = httpx.MockTransport(handler)
+    try:
+        async with GitHubClient(
+            client=httpx.AsyncClient(transport=transport, base_url="https://api.github.com"),
+            shadow_log=shadow_log,
+        ) as client:
+            await client.poll_pull_requests("octo", "repo")
+            await client.poll_pull_requests("octo", "repo")
+
+        rows = [
+            tuple(row)
+            for row in shadow_log._connection.execute(
+            "SELECT event_id, event_type FROM raw_events ORDER BY id ASC"
+            ).fetchall()
+        ]
+        assert rows == [
+            ("pull_request:41:2026-04-30T10:00:00Z", "opened"),
+            ("pull_request:41:2026-04-30T11:00:00Z", "edited"),
+        ]
+    finally:
+        shadow_log.close()
+
+
+@pytest.mark.asyncio
 async def test_poll_issue_comments_retries_rate_limited_responses(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_PAT", "test-token")
     responses = iter(
