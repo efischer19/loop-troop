@@ -266,7 +266,7 @@ class ArchitectWorker:
     @staticmethod
     def _format_issue_context(issue: GitHubIssue, comments: list[GitHubIssueComment]) -> str:
         rendered_comments = "\n".join(
-            f"- @{comment.user.login if comment.user else 'unknown'}: {(comment.body or '').strip()}"
+            f"- @{getattr(comment.user, 'login', 'unknown')}: {(comment.body or '').strip()}"
             for comment in comments
         ) or "- (none)"
         return "\n".join(
@@ -307,7 +307,7 @@ class ArchitectWorker:
                 "## Architect Planning Paused",
                 f"This issue requires architectural work before implementation. Please create or update {references}.",
                 "",
-                plan.adr_instructions or "",
+                plan.adr_instructions,
                 "",
                 f"Verification strategy: {plan.verification_strategy}",
             ]
@@ -334,9 +334,19 @@ class ArchitectWorker:
         lines = ["## Feature Breakdown"]
         for index, sub_issue in enumerate(plan.sub_issues):
             issue_number = created_issues[index].number
-            dependency_text = ", ".join(f"#{created_issues[item - 1].number}" for item in sub_issue.depends_on) or "none"
+            dependency_numbers = [
+                f"#{ArchitectWorker._created_issue_number_for_dependency(created_issues, item)}"
+                for item in sub_issue.depends_on
+            ]
+            dependency_text = ", ".join(dependency_numbers) or "none"
             lines.append(f"- [ ] #{issue_number}: {sub_issue.title} (Depends on: {dependency_text})")
         return "\n".join(lines)
+
+    @staticmethod
+    def _created_issue_number_for_dependency(created_issues: list[GitHubIssue], dependency_index: int) -> int:
+        if dependency_index < 1 or dependency_index > len(created_issues):
+            raise ValueError(f"Dependency index {dependency_index} is out of bounds for the created issue list.")
+        return created_issues[dependency_index - 1].number
 
     @staticmethod
     def _workflow_label(issue: GitHubIssue) -> WorkflowLabel | None:

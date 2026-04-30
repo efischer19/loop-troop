@@ -151,7 +151,7 @@ def test_feature_plan_rejects_out_of_bounds_and_self_dependencies() -> None:
             ],
         )
 
-    with pytest.raises(ValidationError, match="final sub-issue must be marked as the integration or feature test"):
+    with pytest.raises(ValidationError, match="final sub-issue must be marked as the integration test"):
         FeaturePlan(
             epic_issue_number=102,
             sub_issues=[

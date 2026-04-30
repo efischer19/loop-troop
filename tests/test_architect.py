@@ -111,7 +111,7 @@ class FakeContextHydrator:
         return self.hydrated_context
 
 
-def _rule_of_three_validation_error():
+def _create_rule_of_three_validation_error():
     with pytest.raises(Exception) as exc_info:
         ChecklistItem(
             description="bad item",
@@ -196,7 +196,7 @@ async def test_architect_worker_retries_micro_plan_with_validation_feedback() ->
     )
     llm_client = FakeStructuredLLMClient(
         [
-            _rule_of_three_validation_error(),
+            _create_rule_of_three_validation_error(),
             ArchitectPlan(
                 issue_number=7,
                 checklist_items=[

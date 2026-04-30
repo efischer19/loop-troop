@@ -158,7 +158,7 @@ class FeaturePlan(BaseModel):
                 if dependency == index:
                     raise ValueError(f"Sub-issue {index} cannot depend on itself.")
         if not self.sub_issues[-1].is_integration_test:
-            raise ValueError("The final sub-issue must be marked as the integration or feature test.")
+            raise ValueError("The final sub-issue must be marked as the integration test.")
         return self
 
 
