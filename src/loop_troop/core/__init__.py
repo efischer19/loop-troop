@@ -7,12 +7,14 @@ from .context_hydrator import (
     WorkspaceViolationError,
 )
 from .github_client import (
+    GitHubCheckRun,
     GitHubClient,
     GitHubIssue,
     GitHubIssueComment,
     GitHubIssueEvent,
     GitHubLabel,
     GitHubPullRequest,
+    GitHubPullRequestFile,
     InMemoryETagStore,
     PollResponse,
 )
@@ -45,11 +47,13 @@ __all__ = [
     "ContextBudgetExceededError",
     "ContextHydrator",
     "GitHubClient",
+    "GitHubCheckRun",
     "GitHubIssue",
     "GitHubIssueComment",
     "GitHubIssueEvent",
     "GitHubLabel",
     "GitHubPullRequest",
+    "GitHubPullRequestFile",
     "InMemoryETagStore",
     "LLMClient",
     "PollResponse",

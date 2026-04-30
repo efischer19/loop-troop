@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from pydantic import ValidationError
@@ -230,4 +232,78 @@ async def test_create_issue_and_comment_use_github_rest_endpoints(monkeypatch: p
     assert seen_requests == [
         ("POST", "/repos/octo/repo/issues", {"raw": '{"title":"Child issue","body":"Work item","labels":["loop: needs-planning"]}'}),
         ("POST", "/repos/octo/repo/issues/12/comments", {"raw": '{"body":"planned"}'}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_review_helpers_use_expected_github_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "test-token")
+    seen_requests: list[tuple[str, str, str | None, dict | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read().decode()
+        payload = json.loads(body) if body else None
+        seen_requests.append((request.method, request.url.path, request.headers.get("Accept"), payload))
+        if request.url.path.endswith("/pulls/12/files"):
+            return httpx.Response(200, json=[{"filename": "tests/test_reviewer.py", "patch": "@@ -1 +1 @@"}])
+        if request.url.path.endswith("/commits/abc123/check-runs"):
+            return httpx.Response(200, json={"check_runs": [{"id": 9, "name": "pytest", "conclusion": "success"}]})
+        if request.url.path.endswith("/pulls/12/reviews"):
+            return httpx.Response(200, json={"id": 77, "state": "APPROVED"})
+        if request.url.path.endswith("/pulls/12"):
+            if request.headers.get("Accept") == "application/vnd.github.diff":
+                return httpx.Response(200, text="diff --git a/file.py b/file.py")
+            return httpx.Response(
+                200,
+                json={
+                    "id": 12,
+                    "number": 12,
+                    "state": "open",
+                    "title": "Review me",
+                    "body": "Closes #42",
+                    "labels": [{"name": "loop: needs-review"}],
+                    "head": {"sha": "abc123", "ref": "feature/review"},
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with GitHubClient(client=httpx.AsyncClient(transport=transport, base_url="https://api.github.com")) as client:
+        pull_request = await client.get_pull_request("octo", "repo", 12)
+        pull_request_diff = await client.get_pull_request_diff("octo", "repo", 12)
+        files = await client.list_pull_request_files("octo", "repo", 12)
+        check_runs = await client.get_check_runs("octo", "repo", "abc123")
+        review = await client.create_pull_request_review(
+            "octo",
+            "repo",
+            12,
+            event="APPROVE",
+            body="Looks good",
+            comments=[{"path": "tests/test_reviewer.py", "body": "Nice", "line": 8, "side": "RIGHT"}],
+            commit_id="abc123",
+        )
+
+    assert pull_request.labels[0].name == "loop: needs-review"
+    assert pull_request.head is not None
+    assert pull_request.head.sha == "abc123"
+    assert pull_request_diff == "diff --git a/file.py b/file.py"
+    assert files[0].filename == "tests/test_reviewer.py"
+    assert check_runs[0].conclusion == "success"
+    assert review["state"] == "APPROVED"
+    assert seen_requests == [
+        ("GET", "/repos/octo/repo/pulls/12", "application/vnd.github+json", None),
+        ("GET", "/repos/octo/repo/pulls/12", "application/vnd.github.diff", None),
+        ("GET", "/repos/octo/repo/pulls/12/files", "application/vnd.github+json", None),
+        ("GET", "/repos/octo/repo/commits/abc123/check-runs", "application/vnd.github+json", None),
+        (
+            "POST",
+            "/repos/octo/repo/pulls/12/reviews",
+            "application/vnd.github+json",
+            {
+                "event": "APPROVE",
+                "body": "Looks good",
+                "comments": [{"path": "tests/test_reviewer.py", "body": "Nice", "line": 8, "side": "RIGHT"}],
+                "commit_id": "abc123",
+            },
+        ),
     ]

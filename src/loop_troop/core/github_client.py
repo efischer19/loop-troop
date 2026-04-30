@@ -40,6 +40,19 @@ class GitHubIssueEvent(BaseModel):
     issue: GitHubIssueRef | None = None
 
 
+class GitHubLabel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+
+
+class GitHubPullRequestHead(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    ref: str | None = None
+    sha: str
+
+
 class GitHubPullRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -47,8 +60,11 @@ class GitHubPullRequest(BaseModel):
     number: int
     state: str
     title: str
+    body: str | None = None
     updated_at: str | None = None
     user: GitHubUser | None = None
+    labels: list[GitHubLabel] = Field(default_factory=list)
+    head: GitHubPullRequestHead | None = None
 
 
 class GitHubIssueComment(BaseModel):
@@ -61,10 +77,21 @@ class GitHubIssueComment(BaseModel):
     user: GitHubUser | None = None
 
 
-class GitHubLabel(BaseModel):
+class GitHubPullRequestFile(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    filename: str
+    status: str | None = None
+    patch: str | None = None
+
+
+class GitHubCheckRun(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: int
     name: str
+    status: str | None = None
+    conclusion: str | None = None
 
 
 class GitHubIssue(BaseModel):
@@ -237,6 +264,77 @@ class GitHubClient:
         )
         response.raise_for_status()
         return [GitHubIssueComment.model_validate(item) for item in response.json()]
+
+    async def get_pull_request(self, owner: str, repo: str, pull_number: int) -> GitHubPullRequest:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pull_number}",
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubPullRequest.model_validate(response.json())
+
+    async def get_pull_request_diff(self, owner: str, repo: str, pull_number: int) -> str:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pull_number}",
+            headers={
+                **self._default_headers,
+                "Accept": "application/vnd.github.diff",
+            },
+        )
+        response.raise_for_status()
+        return response.text
+
+    async def list_pull_request_files(
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        *,
+        per_page: int = 100,
+    ) -> list[GitHubPullRequestFile]:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pull_number}/files",
+            params={"per_page": per_page},
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return [GitHubPullRequestFile.model_validate(item) for item in response.json()]
+
+    async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[GitHubCheckRun]:
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/commits/{ref}/check-runs",
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return [GitHubCheckRun.model_validate(item) for item in payload.get("check_runs", [])]
+
+    async def create_pull_request_review(
+        self,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        *,
+        event: str,
+        body: str,
+        comments: list[dict[str, Any]] | None = None,
+        commit_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "event": event,
+            "body": body,
+        }
+        if comments:
+            payload["comments"] = comments
+        if commit_id:
+            payload["commit_id"] = commit_id
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+            json=payload,
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def replace_issue_labels(
         self,
