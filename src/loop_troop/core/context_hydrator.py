@@ -24,6 +24,22 @@ def estimate_token_count(text: str) -> int:
     return sum(1 for _ in re.finditer(r"\S+", text))
 
 
+def validate_target_repo_path(repo_path: str | Path, *, loop_troop_root: str | Path) -> Path:
+    """Resolve and validate a target repository path outside the Loop Troop source tree."""
+
+    resolved_repo_path = Path(repo_path).resolve()
+    resolved_loop_troop_root = Path(loop_troop_root).resolve()
+    if not resolved_repo_path.exists():
+        raise FileNotFoundError(f"Repository path does not exist: {resolved_repo_path}")
+    if not resolved_repo_path.is_dir():
+        raise NotADirectoryError(f"Repository path is not a directory: {resolved_repo_path}")
+    if resolved_repo_path.is_relative_to(resolved_loop_troop_root):
+        raise WorkspaceViolationError(
+            "Target repository must not be inside the Loop Troop installation directory."
+        )
+    return resolved_repo_path
+
+
 class ContextHydrator:
     """Hydrate a strict, budget-aware prompt context using Repomix."""
 
@@ -92,16 +108,7 @@ class ContextHydrator:
         return resolved_issue_tokens + resolved_adr_tokens
 
     def _validate_repo_path(self, repo_path: str | Path) -> Path:
-        resolved_repo_path = Path(repo_path).resolve()
-        if not resolved_repo_path.exists():
-            raise FileNotFoundError(f"Repository path does not exist: {resolved_repo_path}")
-        if not resolved_repo_path.is_dir():
-            raise NotADirectoryError(f"Repository path is not a directory: {resolved_repo_path}")
-        if resolved_repo_path.is_relative_to(self.loop_troop_root):
-            raise WorkspaceViolationError(
-                "Hydration target must not be inside the Loop Troop installation directory."
-            )
-        return resolved_repo_path
+        return validate_target_repo_path(repo_path, loop_troop_root=self.loop_troop_root)
 
     def _load_or_generate_repomix_output(
         self,
