@@ -254,6 +254,42 @@ class GitHubClient:
         response.raise_for_status()
         return [GitHubLabel.model_validate(item).name for item in response.json()]
 
+    async def create_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        *,
+        body: str,
+    ) -> GitHubIssueComment:
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+            json={"body": body},
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubIssueComment.model_validate(response.json())
+
+    async def create_issue(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> GitHubIssue:
+        payload: dict[str, Any] = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/issues",
+            json=payload,
+            headers=self._default_headers,
+        )
+        response.raise_for_status()
+        return GitHubIssue.model_validate(response.json())
+
     async def _poll_collection(
         self,
         *,

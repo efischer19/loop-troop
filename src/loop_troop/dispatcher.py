@@ -35,6 +35,7 @@ ISSUE_NUMBER_PATTERN = re.compile(r"#(?P<number>[0-9]+)")
 class WorkflowLabel(str, Enum):
     NEEDS_PLANNING = "loop: needs-planning"
     FEATURE = "loop: feature"
+    NEEDS_ADR = "loop: needs-adr"
     READY = "loop: ready"
     NEEDS_REVIEW = "loop: needs-review"
     EPIC_TRACKING = "loop: epic-tracking"
@@ -57,8 +58,13 @@ VALID_LABEL_TRANSITIONS: dict[WorkflowLabel | None, set[WorkflowLabel]] = {
         WorkflowLabel.READY,
         WorkflowLabel.NEEDS_REVIEW,
     },
-    WorkflowLabel.NEEDS_PLANNING: {WorkflowLabel.NEEDS_PLANNING, WorkflowLabel.READY},
+    WorkflowLabel.NEEDS_PLANNING: {
+        WorkflowLabel.NEEDS_PLANNING,
+        WorkflowLabel.NEEDS_ADR,
+        WorkflowLabel.READY,
+    },
     WorkflowLabel.FEATURE: {WorkflowLabel.FEATURE, WorkflowLabel.EPIC_TRACKING},
+    WorkflowLabel.NEEDS_ADR: {WorkflowLabel.NEEDS_ADR},
     WorkflowLabel.READY: {WorkflowLabel.READY, WorkflowLabel.NEEDS_REVIEW, WorkflowLabel.DONE},
     WorkflowLabel.NEEDS_REVIEW: {
         WorkflowLabel.NEEDS_REVIEW,

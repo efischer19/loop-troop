@@ -111,6 +111,7 @@ def test_feature_plan_and_sub_issue_round_trip() -> None:
                 title="Integration test",
                 description="Verify the end-to-end feature flow.",
                 depends_on=[1],
+                is_integration_test=True,
             ),
         ],
         adr_references=["ADR-0002-recursive-macro-planning.md"],
@@ -128,7 +129,12 @@ def test_feature_plan_rejects_out_of_bounds_and_self_dependencies() -> None:
             epic_issue_number=100,
             sub_issues=[
                 SubIssue(title="One", description="First sub-issue."),
-                SubIssue(title="Two", description="Second sub-issue.", depends_on=[3]),
+                SubIssue(
+                    title="Two",
+                    description="Second sub-issue.",
+                    depends_on=[3],
+                    is_integration_test=True,
+                ),
             ],
         )
 
@@ -136,7 +142,21 @@ def test_feature_plan_rejects_out_of_bounds_and_self_dependencies() -> None:
         FeaturePlan(
             epic_issue_number=101,
             sub_issues=[
-                SubIssue(title="One", description="First sub-issue.", depends_on=[1]),
+                SubIssue(
+                    title="One",
+                    description="First sub-issue.",
+                    depends_on=[1],
+                    is_integration_test=True,
+                ),
+            ],
+        )
+
+    with pytest.raises(ValidationError, match="final sub-issue must be marked as the integration test"):
+        FeaturePlan(
+            epic_issue_number=102,
+            sub_issues=[
+                SubIssue(title="One", description="First sub-issue."),
+                SubIssue(title="Two", description="Second sub-issue.", depends_on=[1]),
             ],
         )
 
@@ -158,6 +178,41 @@ def test_checklist_item_requires_test_and_test_instructions_contract() -> None:
             description="Instructions without a test.",
             requires_test=False,
             test_instructions="This should not be present.",
+        )
+
+
+def test_architect_plan_validates_adr_requirements() -> None:
+    plan = ArchitectPlan(
+        issue_number=55,
+        checklist_items=[],
+        adr_references=["ADR-0009"],
+        requires_adr=True,
+        adr_instructions="Create ADR-0009 before implementation.",
+        verification_strategy="Re-run planning after the ADR merges.",
+    )
+
+    assert plan.requires_adr is True
+    assert plan.adr_instructions == "Create ADR-0009 before implementation."
+
+    with pytest.raises(ValidationError, match="must not include checklist_items"):
+        ArchitectPlan(
+            issue_number=55,
+            checklist_items=[
+                ChecklistItem(
+                    description="Should not coexist with ADR flow.",
+                    requires_test=False,
+                )
+            ],
+            requires_adr=True,
+            adr_instructions="Create ADR-0009 before implementation.",
+            verification_strategy="Retry later.",
+        )
+
+    with pytest.raises(ValidationError, match="must include at least one checklist item"):
+        ArchitectPlan(
+            issue_number=56,
+            checklist_items=[],
+            verification_strategy="Retry later.",
         )
 
 

@@ -187,3 +187,47 @@ async def test_poll_issue_events_logs_before_model_validation(monkeypatch: pytes
         assert pending[0].repo == "octo/repo"
     finally:
         shadow_log.close()
+
+
+@pytest.mark.asyncio
+async def test_create_issue_and_comment_use_github_rest_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "test-token")
+    seen_requests: list[tuple[str, str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read().decode()
+        if request.url.path.endswith("/issues/12/comments"):
+            seen_requests.append((request.method, request.url.path, {"raw": payload}))
+            return httpx.Response(201, json={"id": 44, "body": "planned"})
+        if request.url.path.endswith("/issues"):
+            seen_requests.append((request.method, request.url.path, {"raw": payload}))
+            return httpx.Response(
+                201,
+                json={
+                    "number": 12,
+                    "state": "open",
+                    "title": "Child issue",
+                    "body": "Work item",
+                    "labels": [{"name": "loop: needs-planning"}],
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with GitHubClient(client=httpx.AsyncClient(transport=transport, base_url="https://api.github.com")) as client:
+        created_issue = await client.create_issue(
+            "octo",
+            "repo",
+            title="Child issue",
+            body="Work item",
+            labels=["loop: needs-planning"],
+        )
+        created_comment = await client.create_issue_comment("octo", "repo", 12, body="planned")
+
+    assert created_issue.number == 12
+    assert created_issue.labels[0].name == "loop: needs-planning"
+    assert created_comment.body == "planned"
+    assert seen_requests == [
+        ("POST", "/repos/octo/repo/issues", {"raw": '{"title":"Child issue","body":"Work item","labels":["loop: needs-planning"]}'}),
+        ("POST", "/repos/octo/repo/issues/12/comments", {"raw": '{"body":"planned"}'}),
+    ]
