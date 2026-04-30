@@ -1,0 +1,141 @@
+# Loop Troop Dogfood Benchmark Suite
+#
+# Five tasks drawn from the Loop Troop backlog itself, used to compare model
+# configurations at each cognitive tier.
+#
+# Usage:
+#   loop-troop-eval benchmarks/loop_troop.toml
+#   loop-troop-eval benchmarks/loop_troop.toml --tier T1
+#   loop-troop-eval benchmarks/loop_troop.toml --output results.json
+
+title = "Loop Troop Dogfood Suite"
+
+# ---------------------------------------------------------------------------
+# Model configurations
+# ---------------------------------------------------------------------------
+
+[[model_configs]]
+name = "t1-baseline"
+tier  = "T1"
+model = "qwen2.5-coder:7b"
+
+[[model_configs]]
+name = "t2-baseline"
+tier  = "T2"
+model = "qwen2.5-coder:14b"
+
+[[model_configs]]
+name = "t3-baseline"
+tier  = "T3"
+model = "qwen2.5-coder:32b"
+
+# ---------------------------------------------------------------------------
+# T1 tasks — dispatch / triage tier
+# ---------------------------------------------------------------------------
+
+[[tasks]]
+id    = "dispatch-version-flag"
+tier  = "T1"
+issue_body = """\
+## feat: Add --version flag to the daemon CLI
+
+The `loop-troop-daemon` command should print its version number and exit when
+invoked with `--version`.  The version should match the `version` field in
+`pyproject.toml` (read via `importlib.metadata`).
+"""
+
+  [[tasks.assertions]]
+  type  = "min_checklist_items"
+  value = 1
+
+  [[tasks.assertions]]
+  type  = "max_checklist_items"
+  value = 6
+
+[[tasks]]
+id    = "dispatch-rate-limit"
+tier  = "T1"
+issue_body = """\
+## feat: Rate-limit the GitHub API polling loop
+
+The sync daemon hits the GitHub API on every poll cycle.  If the poll interval
+is very short or there are many repos being watched, we risk exceeding the
+GitHub REST API rate limit (5,000 requests/hour for authenticated requests).
+Add a rate-limit guard that backs off when the remaining budget drops below a
+configurable threshold (default 200 requests).
+"""
+
+  [[tasks.assertions]]
+  type  = "min_checklist_items"
+  value = 2
+
+  [[tasks.assertions]]
+  type  = "max_checklist_items"
+  value = 8
+
+# ---------------------------------------------------------------------------
+# T2 tasks — architecture / planning tier
+# ---------------------------------------------------------------------------
+
+[[tasks]]
+id    = "plan-metrics-dashboard"
+tier  = "T2"
+issue_body = """\
+## feat: LLM Metrics Dashboard CLI
+
+Add a lightweight CLI command (`loop-troop metrics`) that queries the
+`llm_metrics` SQLite table and prints a summary table: total calls, average
+TTFT per tier, p95 latency, error rate, and top models by call count.
+The command should support a `--since` flag (ISO date) to scope the window.
+"""
+
+  [[tasks.assertions]]
+  type  = "min_checklist_items"
+  value = 3
+
+  [[tasks.assertions]]
+  type  = "has_reasoning"
+
+# ---------------------------------------------------------------------------
+# T3 tasks — coding tier
+# ---------------------------------------------------------------------------
+
+[[tasks]]
+id    = "code-add-version-flag"
+tier  = "T3"
+issue_body = """\
+## feat: Add --version flag to the daemon CLI
+
+The `loop-troop-daemon` command should print its version number and exit when
+invoked with `--version`.  Read the version from `importlib.metadata.version`.
+Add a unit test that patches `importlib.metadata.version` and asserts the
+printed string.
+"""
+
+  [[tasks.assertions]]
+  type  = "min_checklist_items"
+  value = 2
+
+  [[tasks.assertions]]
+  type  = "checklist_item_contains"
+  value = "importlib"
+
+[[tasks]]
+id    = "code-retry-backoff"
+tier  = "T3"
+issue_body = """\
+## fix: Ollama LLM client uses fixed retry delay
+
+The `LLMClient.complete_structured` method retries on validation errors using
+`tenacity`, but the current retry policy has no back-off.  Switch to
+exponential back-off with jitter (base 0.5 s, multiplier 2, max 10 s) to
+reduce load on the Ollama server during temporary overloads.  Update the
+existing retry-tracker unit tests to account for the new back-off parameters.
+"""
+
+  [[tasks.assertions]]
+  type  = "min_checklist_items"
+  value = 2
+
+  [[tasks.assertions]]
+  type  = "has_reasoning"
