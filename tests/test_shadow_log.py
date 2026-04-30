@@ -62,14 +62,15 @@ def test_state_transitions_record_dispatched_at(tmp_path) -> None:
         assert completed_dispatched_at is None
         assert completed_target is None
 
-        shadow_log.mark_failed(202)
-        status, failed_dispatched_at, failed_target = shadow_log._connection.execute(
-            "SELECT status, dispatched_at, dispatch_target FROM event_state WHERE event_id = ?",
+        shadow_log.mark_failed(202, error_details="worker crashed")
+        status, failed_dispatched_at, failed_target, failed_error_details = shadow_log._connection.execute(
+            "SELECT status, dispatched_at, dispatch_target, error_details FROM event_state WHERE event_id = ?",
             ("202",),
         ).fetchone()
         assert status == "failed"
         assert failed_dispatched_at is None
         assert failed_target is None
+        assert failed_error_details == "worker crashed"
     finally:
         shadow_log.close()
 
@@ -106,7 +107,7 @@ def test_shadow_log_creates_versioned_schema(tmp_path) -> None:
         version = shadow_log._connection.execute(
             "SELECT MAX(version) FROM schema_versions"
         ).fetchone()[0]
-        assert version == 2
+        assert version == 3
     finally:
         shadow_log.close()
 

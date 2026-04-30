@@ -35,6 +35,12 @@ The system routes tasks to appropriately sized local models via Ollama / Exo clu
 2. **Tier 2 (35B Models) — The Coder:** Code generation, inner loop execution (`make test` in Docker sandbox), and merge conflict resolution.
 3. **Tier 3 (70B/100B Models) — The Architect & Reviewer:** Planning (Rule of 3 checklist generation), PR review, and ADR enforcement.
 
+## 🔄 Label Lifecycle
+
+- **Micro-planning:** `loop: needs-planning` → Architect posts a checklist and relabels the issue to `loop: ready` → Coder opens a PR labeled `loop: needs-review` → Reviewer relabels the PR to `loop: approved` or `loop: changes-requested`.
+- **Macro-planning:** `loop: feature` → Architect decomposes the epic into sub-issues, labels each child `loop: needs-planning` or `loop: feature`, posts a DAG comment, and relabels the parent to `loop: epic-tracking`.
+- **Recursive decomposition:** Any sub-issue labeled `loop: feature` can be decomposed again, following [ADR-0002](docs/architecture/ADR-0002-recursive-epic-decomposition.md).
+
 ## 📂 Target Directory Structure
 (Note: This is the expected target state for the MVP implementation)
 

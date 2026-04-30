@@ -426,7 +426,7 @@ class GitHubClient:
             if self._shadow_log is not None:
                 for item in payload:
                     self._shadow_log.log_event(
-                        item,
+                        self._shadow_log_payload(path, item),
                         repo=f"{owner}/{repo}",
                         default_event_type=self._default_event_type(path),
                     )
@@ -511,3 +511,21 @@ class GitHubClient:
         if path == "/pulls":
             return "pull_request"
         return "github_event"
+
+    @staticmethod
+    def _shadow_log_payload(path: str, item: Mapping[str, Any]) -> Mapping[str, Any]:
+        if path != "/pulls":
+            return item
+
+        pull_request_id = item.get("id")
+        updated_at = item.get("updated_at")
+        created_at = item.get("created_at")
+        event_type = "opened" if created_at and created_at == updated_at else "edited"
+        event_suffix = updated_at or created_at or str(pull_request_id)
+        return {
+            **item,
+            "id": f"pull_request:{pull_request_id}:{event_suffix}",
+            "event": event_type,
+            "created_at": updated_at or created_at,
+            "pull_request": {"number": item.get("number")},
+        }

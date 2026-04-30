@@ -16,9 +16,11 @@ from typing import Any
 
 import httpx
 
+from loop_troop.architect import ArchitectWorker
 from loop_troop.core.github_client import GitHubClient, GitHubIssueEvent
 from loop_troop.core.llm_client import DEFAULT_OLLAMA_HOST
-from loop_troop.dispatcher import Dispatcher, OllamaDispatcherClassifier
+from loop_troop.dispatcher import Dispatcher, OllamaDispatcherClassifier, WorkflowLabel
+from loop_troop.reviewer import ReviewerWorker
 from loop_troop.shadow_log import Checkpoint, ShadowLog
 
 DEFAULT_POLL_INTERVAL_SECONDS = 30.0
@@ -61,6 +63,7 @@ def log_structured(logger: logging.Logger, level: int, message: str, **fields: A
 class DaemonConfig:
     repo: str
     db_path: str | None = None
+    repo_path: str | None = None
     github_base_url: str = DEFAULT_GITHUB_BASE_URL
     ollama_host: str = DEFAULT_OLLAMA_HOST
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
@@ -96,6 +99,13 @@ class DaemonConfig:
                 env=env,
                 file_config=file_config,
                 file_path=("shadow_log", "db_path"),
+                default=None,
+            ),
+            repo_path=_resolve_setting(
+                "LOOP_TROOP_REPO_PATH",
+                env=env,
+                file_config=file_config,
+                file_path=("workspace", "repo_path"),
                 default=None,
             ),
             github_base_url=_resolve_setting(
@@ -169,6 +179,8 @@ class SyncDaemon:
         github_client: GitHubClient,
         shadow_log: ShadowLog,
         dispatcher: Dispatcher,
+        architect_worker: ArchitectWorker | None = None,
+        reviewer_worker: ReviewerWorker | None = None,
         ollama_transport: httpx.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -176,8 +188,11 @@ class SyncDaemon:
         self._github_client = github_client
         self._shadow_log = shadow_log
         self._dispatcher = dispatcher
+        self._architect_worker = architect_worker or ArchitectWorker(github_client=github_client)
+        self._reviewer_worker = reviewer_worker or ReviewerWorker(github_client=github_client)
         self._ollama_transport = ollama_transport
         self._logger = logger or logging.getLogger("loop_troop.daemon")
+        self._repo_path = Path(config.repo_path or os.getcwd())
         self._stop_event = asyncio.Event()
 
     async def run(self, *, max_cycles: int | None = None) -> None:
@@ -230,16 +245,19 @@ class SyncDaemon:
 
     async def run_cycle(self) -> None:
         owner, repo = _split_repo(self._config.repo)
-        checkpoint_key = _checkpoint_key(owner, repo)
-        response = await self._github_client.poll_issue_events(owner, repo)
-        self._update_checkpoint(checkpoint_key, response.items, response.etag)
+        issue_events_response = await self._github_client.poll_issue_events(owner, repo)
+        pull_requests_response = await self._github_client.poll_pull_requests(owner, repo)
+        self._update_checkpoint(_issue_events_checkpoint_key(owner, repo), issue_events_response.items, issue_events_response.etag)
+        self._update_checkpoint(_pulls_checkpoint_key(owner, repo), pull_requests_response.items, pull_requests_response.etag)
         log_structured(
             self._logger,
             logging.INFO,
             "Poll cycle completed",
             repo=self._config.repo,
-            events_polled=len(response.items),
-            not_modified=response.not_modified,
+            issue_events_polled=len(issue_events_response.items),
+            issue_events_not_modified=issue_events_response.not_modified,
+            pull_requests_polled=len(pull_requests_response.items),
+            pull_requests_not_modified=pull_requests_response.not_modified,
             dry_run=self._config.dry_run,
         )
 
@@ -253,6 +271,7 @@ class SyncDaemon:
             return
 
         outcomes = await self._dispatcher.dispatch_pending_events()
+        await self._run_dispatched_workers(outcomes)
         log_structured(
             self._logger,
             logging.INFO,
@@ -263,6 +282,65 @@ class SyncDaemon:
             blocked=sum(1 for outcome in outcomes if outcome.status == "blocked"),
             skipped=sum(1 for outcome in outcomes if outcome.status == "skipped"),
         )
+
+    async def _run_dispatched_workers(self, outcomes: list[Any]) -> None:
+        for outcome in outcomes:
+            if outcome.status != "dispatched" or outcome.decision is None:
+                continue
+            label_name = outcome.decision.label_action.label_name
+            if label_name not in {
+                WorkflowLabel.NEEDS_PLANNING.value,
+                WorkflowLabel.FEATURE.value,
+                WorkflowLabel.NEEDS_REVIEW.value,
+            }:
+                continue
+
+            event = self._shadow_log.get_event(outcome.event_id)
+            if event is None:
+                continue
+
+            owner, repo = _split_repo(event.repo)
+            issue_number = self._issue_number_from_event(event)
+            try:
+                if label_name in {
+                    WorkflowLabel.NEEDS_PLANNING.value,
+                    WorkflowLabel.FEATURE.value,
+                }:
+                    await self._architect_worker.handle_issue(
+                        owner=owner,
+                        repo=repo,
+                        issue_number=issue_number,
+                        repo_path=self._repo_path,
+                    )
+                else:
+                    await self._reviewer_worker.handle_pull_request(
+                        owner=owner,
+                        repo=repo,
+                        pull_number=issue_number,
+                        repo_path=self._repo_path,
+                    )
+            except Exception as exc:
+                self._shadow_log.mark_failed(event.event_id, error_details=str(exc))
+                log_structured(
+                    self._logger,
+                    logging.ERROR,
+                    "Worker execution failed",
+                    event_id=event.event_id,
+                    issue_number=issue_number,
+                    label_name=label_name,
+                    error=str(exc),
+                )
+                continue
+
+            self._shadow_log.mark_completed(event.event_id)
+            log_structured(
+                self._logger,
+                logging.INFO,
+                "Worker execution completed",
+                event_id=event.event_id,
+                issue_number=issue_number,
+                label_name=label_name,
+            )
 
     async def _zombie_sweep_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -303,7 +381,7 @@ class SyncDaemon:
     def _update_checkpoint(
         self,
         checkpoint_key: str,
-        events: list[GitHubIssueEvent],
+        events: list[GitHubIssueEvent] | list[Any],
         etag: str | None,
     ) -> None:
         current: Checkpoint | None = self._shadow_log.get_checkpoint(checkpoint_key)
@@ -313,6 +391,18 @@ class SyncDaemon:
         if etag is None and current is None and last_event_id is None:
             return
         self._shadow_log.set_checkpoint(checkpoint_key, last_event_id=last_event_id, etag=etag)
+
+    @staticmethod
+    def _issue_number_from_event(event) -> int:
+        issue = event.payload.get("issue")
+        if isinstance(issue, dict) and issue.get("number") is not None:
+            return int(issue["number"])
+        pull_request = event.payload.get("pull_request")
+        if isinstance(pull_request, dict) and pull_request.get("number") is not None:
+            return int(pull_request["number"])
+        if event.payload.get("number") is not None:
+            return int(event.payload["number"])
+        raise ValueError(f"Unable to determine issue number from event {event.event_id}.")
 
 
 async def run_daemon(
@@ -405,3 +495,11 @@ def _split_repo(repo: str) -> tuple[str, str]:
 
 def _checkpoint_key(owner: str, repo: str) -> str:
     return f"repos/{owner}/{repo}/issues/events"
+
+
+def _issue_events_checkpoint_key(owner: str, repo: str) -> str:
+    return _checkpoint_key(owner, repo)
+
+
+def _pulls_checkpoint_key(owner: str, repo: str) -> str:
+    return f"repos/{owner}/{repo}/pulls"

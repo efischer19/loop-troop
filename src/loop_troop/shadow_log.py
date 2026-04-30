@@ -23,6 +23,7 @@ class LoggedEvent:
     payload: dict[str, Any]
     status: str
     dispatched_at: str | None
+    error_details: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +113,8 @@ class ShadowLog:
                 raw_events.processed_at,
                 raw_events.payload,
                 event_state.status,
-                event_state.dispatched_at
+                event_state.dispatched_at,
+                event_state.error_details
             FROM raw_events
             INNER JOIN event_state ON event_state.event_id = raw_events.event_id
             WHERE event_state.status = 'pending'
@@ -120,6 +122,29 @@ class ShadowLog:
             """
         ).fetchall()
         return [self._logged_event_from_row(row) for row in rows]
+
+    def get_event(self, event_id: str | int) -> LoggedEvent | None:
+        row = self._connection.execute(
+            """
+            SELECT
+                raw_events.event_id,
+                raw_events.event_type,
+                raw_events.repo,
+                raw_events.created_at,
+                raw_events.processed_at,
+                raw_events.payload,
+                event_state.status,
+                event_state.dispatched_at,
+                event_state.error_details
+            FROM raw_events
+            INNER JOIN event_state ON event_state.event_id = raw_events.event_id
+            WHERE raw_events.event_id = ?
+            """,
+            (str(event_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._logged_event_from_row(row)
 
     def mark_dispatched(self, event_id: str | int, *, dispatch_target: str | None = None) -> None:
         self._update_state(
@@ -132,8 +157,13 @@ class ShadowLog:
     def mark_completed(self, event_id: str | int) -> None:
         self._update_state(str(event_id), status="completed", dispatched_at=False)
 
-    def mark_failed(self, event_id: str | int) -> None:
-        self._update_state(str(event_id), status="failed", dispatched_at=False)
+    def mark_failed(self, event_id: str | int, *, error_details: str | None = None) -> None:
+        self._update_state(
+            str(event_id),
+            status="failed",
+            dispatched_at=False,
+            error_details=error_details,
+        )
 
     def sweep_dispatched_events(
         self,
@@ -183,6 +213,7 @@ class ShadowLog:
                     status = 'pending',
                     dispatched_at = NULL,
                     dispatch_target = NULL,
+                    error_details = NULL,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE event_id = ?
                 """,
@@ -300,8 +331,14 @@ class ShadowLog:
             if current_version < 2:
                 self._connection.execute("ALTER TABLE event_state ADD COLUMN dispatch_target TEXT")
                 self._connection.execute("INSERT INTO schema_versions(version) VALUES (2)")
+                current_version = 2
 
-            if current_version >= 2:
+            if current_version < 3:
+                self._connection.execute("ALTER TABLE event_state ADD COLUMN error_details TEXT")
+                self._connection.execute("INSERT INTO schema_versions(version) VALUES (3)")
+                current_version = 3
+
+            if current_version >= 3:
                 return
 
     def _update_state(
@@ -311,6 +348,7 @@ class ShadowLog:
         status: str,
         dispatched_at: bool,
         dispatch_target: str | None = None,
+        error_details: str | None = None,
     ) -> None:
         with self._connection:
             if dispatched_at:
@@ -321,6 +359,7 @@ class ShadowLog:
                         status = ?,
                         dispatched_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                         dispatch_target = ?,
+                        error_details = NULL,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                     WHERE event_id = ?
                     """,
@@ -334,10 +373,11 @@ class ShadowLog:
                         status = ?,
                         dispatched_at = NULL,
                         dispatch_target = NULL,
+                        error_details = ?,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                     WHERE event_id = ?
                     """,
-                    (status, event_id),
+                    (status, error_details, event_id),
                 )
         if cursor.rowcount == 0:
             raise KeyError(f"Unknown event_id: {event_id}")
@@ -353,6 +393,7 @@ class ShadowLog:
             payload=json.loads(row["payload"]),
             status=row["status"],
             dispatched_at=row["dispatched_at"],
+            error_details=row["error_details"],
         )
 
     @staticmethod

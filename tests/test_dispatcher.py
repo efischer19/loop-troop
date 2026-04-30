@@ -177,6 +177,61 @@ async def test_dispatcher_marks_failed_after_ollama_timeouts(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_relabels_pull_request_updates_for_reviewer(tmp_path) -> None:
+    shadow_log = ShadowLog(tmp_path / "shadow.db")
+    try:
+        shadow_log.log_event(
+            {
+                "id": "pull_request:12:2026-04-30T12:00:00Z",
+                "event": "edited",
+                "number": 12,
+                "head": {"sha": "abc123", "ref": "feature/review"},
+                "pull_request": {"number": 12},
+            },
+            repo="octo/repo",
+        )
+        github_client = FakeGitHubClient(
+            issues={
+                12: GitHubIssue(
+                    number=12,
+                    state="open",
+                    title="Review me again",
+                    labels=[GitHubLabel(name="backend"), GitHubLabel(name=WorkflowLabel.APPROVED.value)],
+                )
+            }
+        )
+        classifier = OllamaDispatcherClassifier(
+            llm_client=FakeStructuredLLMClient(
+                [
+                    DispatchClassification(
+                        route=DispatchRoute.REVIEWER,
+                        model_name="qwen2.5-coder:32b",
+                        reasoning="PR activity should go back through reviewer.",
+                    )
+                ]
+            )
+        )
+        dispatcher = Dispatcher(
+            shadow_log=shadow_log,
+            github_client=github_client,
+            classifier=classifier,
+        )
+
+        outcomes = await dispatcher.dispatch_pending_events()
+
+        assert len(outcomes) == 1
+        assert outcomes[0].status == "dispatched"
+        assert outcomes[0].decision is not None
+        assert outcomes[0].decision.event_type is EventType.EDITED
+        assert outcomes[0].decision.label_action.label_name == WorkflowLabel.NEEDS_REVIEW.value
+        assert github_client.replaced_labels == [
+            ("octo", "repo", 12, ["backend", WorkflowLabel.NEEDS_REVIEW.value])
+        ]
+    finally:
+        shadow_log.close()
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_blocks_when_dependencies_are_not_resolved(tmp_path) -> None:
     shadow_log = ShadowLog(tmp_path / "shadow.db")
     try:
