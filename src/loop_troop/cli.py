@@ -6,6 +6,7 @@ import argparse
 import json
 from datetime import UTC, datetime
 from typing import Any
+from collections.abc import Callable
 
 import httpx
 
@@ -51,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
 def run_replay(
     args: argparse.Namespace,
     *,
-    client_factory: type[httpx.Client] = httpx.Client,
+    client_factory: Callable[..., httpx.Client] = httpx.Client,
 ) -> dict[str, Any]:
     config = DaemonConfig.from_sources(args=argparse.Namespace(config=args.config, dry_run=False))
     ollama_host = (args.ollama_host or config.ollama_host or DEFAULT_OLLAMA_HOST).rstrip("/")
@@ -100,7 +101,7 @@ def _validate_model_available(
     model_name: str,
     *,
     ollama_host: str,
-    client_factory: type[httpx.Client],
+    client_factory: Callable[..., httpx.Client],
 ) -> None:
     with client_factory(base_url=ollama_host, timeout=5.0) as client:
         response = client.get("/api/tags")

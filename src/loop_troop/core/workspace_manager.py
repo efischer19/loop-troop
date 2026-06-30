@@ -113,6 +113,7 @@ class WorkspaceManager:
         if not model_name:
             return branch
         model_suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", model_name).strip("-")
+        model_suffix = re.sub(r"[-.]{2,}", "-", model_suffix)
         return f"{branch}-{model_suffix}" if model_suffix else branch
 
     def _target_path_for_repo(self, repo_url: str) -> Path:

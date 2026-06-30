@@ -857,13 +857,15 @@ class CoderWorker:
         issue = await self._github_client.get_issue(owner, repo, issue_number)
         if self._workflow_label(issue) is not WorkflowLabel.READY:
             raise ValueError(f"Issue #{issue_number} does not have the Coder label.")
+        if ghost_run and target_execution_profile is None:
+            raise ValueError("Ghost runs require a target execution profile.")
 
         comments = await self._github_client.list_issue_comments(owner, repo, issue_number)
         checklist_item = self._first_unchecked_item(comments)
         branch_name = self._workspace_manager.branch_name_for_issue(
             issue.number,
             checklist_item.item_index,
-            model_name=target_execution_profile.model_name if ghost_run and target_execution_profile else None,
+            model_name=target_execution_profile.model_name if ghost_run else None,
         )
         base_branch = self._workspace_manager.current_branch(repo_path)
         self._workspace_manager.create_branch(repo_path, branch_name)
@@ -914,7 +916,6 @@ class CoderWorker:
                     repo=repo,
                     title=self._pull_request_title(
                         issue=issue,
-                        checklist_item=checklist_item,
                         code_patch=code_patch,
                         ghost_run=ghost_run,
                         model_name=target_execution_profile.model_name if target_execution_profile else None,
@@ -1076,15 +1077,12 @@ class CoderWorker:
     def _pull_request_title(
         *,
         issue: GitHubIssue,
-        checklist_item: ParsedChecklistItem,
         code_patch: CodePatch,
         ghost_run: bool,
         model_name: str | None,
     ) -> str:
         if ghost_run and model_name:
             return f"[BAKE-OFF] feat: Issue {issue.number} — {model_name}"
-        if ghost_run:
-            return f"[BAKE-OFF] feat: Issue {issue.number} — Checklist item {checklist_item.item_index}"
         return code_patch.commit_message
 
     @staticmethod
