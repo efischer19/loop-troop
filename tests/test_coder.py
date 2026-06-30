@@ -330,6 +330,44 @@ async def test_coder_worker_creates_pr_and_checks_item_when_tests_pass(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_coder_worker_ghost_run_uses_model_suffix_branch_and_draft_pr(tmp_path: Path) -> None:
+    remote_repo, workspace_repo, manager = _create_workspace(tmp_path)
+    github_client = FakeGitHubClient(_ready_issue(), [_architect_comment()])
+    llm_client = FakeStructuredLLMClient([_code_patch(content="print('ghost')\n")])
+    inner_loop = FakeInnerLoop([InnerLoopResult(success=True, mode="tdd")])
+    pr_manager = FakePRManager()
+    worker = CoderWorker(
+        github_client=github_client,
+        llm_client=llm_client,
+        context_hydrator=FakeContextHydrator("hydrated coder context"),
+        adr_loader=FakeADRLoader("accepted ADRs"),
+        workspace_manager=manager,
+        inner_loop=inner_loop,
+        pr_manager=pr_manager,
+    )
+    profile = TargetExecutionProfile(
+        tier=WorkerTier.T2,
+        model_name="qwen2.5-coder:32b",
+        reasoning="Run a bake-off comparison.",
+    )
+
+    outcome = await worker.handle_issue(
+        owner="octo",
+        repo="repo",
+        issue_number=42,
+        repo_path=workspace_repo,
+        target_execution_profile=profile,
+        ghost_run=True,
+    )
+
+    assert outcome.branch_name == "loop/issue-42-item-2-qwen2.5-coder-32b"
+    assert pr_manager.calls[0]["draft"] is True
+    assert pr_manager.calls[0]["title"] == "[BAKE-OFF] feat: Issue 42 — qwen2.5-coder:32b"
+    assert pr_manager.calls[0]["head"] == "loop/issue-42-item-2-qwen2.5-coder-32b"
+    assert "loop/issue-42-item-2-qwen2.5-coder-32b" in _run_git(remote_repo, "branch", "--list").stdout
+
+
+@pytest.mark.asyncio
 async def test_coder_worker_retries_after_failed_inner_loop(tmp_path: Path) -> None:
     _remote_repo, workspace_repo, manager = _create_workspace(tmp_path)
     github_client = FakeGitHubClient(_ready_issue(), [_architect_comment()])

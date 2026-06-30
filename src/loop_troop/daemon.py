@@ -323,6 +323,7 @@ class SyncDaemon:
                         issue_number=issue_number,
                         repo_path=self._repo_path,
                         target_execution_profile=outcome.decision.target_profile,
+                        ghost_run=outcome.decision.ghost_run,
                     )
                 else:
                     await self._reviewer_worker.handle_pull_request(

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 from .context_hydrator import WorkspaceViolationError
@@ -100,6 +101,19 @@ class WorkspaceManager:
     def cleanup(self, repo_path: str | Path) -> None:
         resolved_repo_path = self._validate_managed_workspace(repo_path)
         shutil.rmtree(resolved_repo_path)
+
+    @staticmethod
+    def branch_name_for_issue(
+        issue_number: int,
+        checklist_item_index: int,
+        *,
+        model_name: str | None = None,
+    ) -> str:
+        branch = f"loop/issue-{issue_number}-item-{checklist_item_index}"
+        if not model_name:
+            return branch
+        model_suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", model_name).strip("-")
+        return f"{branch}-{model_suffix}" if model_suffix else branch
 
     def _target_path_for_repo(self, repo_url: str) -> Path:
         repo_name = self._repo_name_from_url(repo_url)

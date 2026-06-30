@@ -227,6 +227,45 @@ def test_llm_client_captures_metrics_on_success(tmp_path) -> None:
     assert row["ttft_ms"] is None
 
 
+def test_llm_client_replay_metrics_preserve_requested_model_name(tmp_path) -> None:
+    with ShadowLog(tmp_path / "shadow.db") as shadow_log:
+        collector = MetricsCollector(shadow_log=shadow_log)
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                return DummyResponse(
+                    ok=True,
+                    usage={"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9},
+                )
+
+        class FakeChat:
+            completions = FakeCompletions()
+
+        class FakeInstructorClient:
+            chat = FakeChat()
+
+        llm_client = LLMClient(
+            openai_factory=lambda **_: object(),
+            instructor_factory=lambda *_args, **_kwargs: FakeInstructorClient(),
+            metrics_collector=collector,
+        )
+        llm_client.complete_structured(
+            tier=WorkerTier.T2,
+            response_model=DummyResponse,
+            messages=[{"role": "user", "content": "ghost run"}],
+            model_override="qwen2.5-coder:32b",
+            event_id="ghost-run:42:qwen2.5-coder:32b",
+        )
+
+        row = shadow_log._connection.execute(
+            "SELECT model_name, event_id FROM llm_metrics ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    assert row is not None
+    assert row["model_name"] == "qwen2.5-coder:32b"
+    assert row["event_id"] == "ghost-run:42:qwen2.5-coder:32b"
+
+
 def test_llm_client_captures_metrics_on_failure(tmp_path) -> None:
     with ShadowLog(tmp_path / "shadow.db") as shadow_log:
         collector = MetricsCollector(shadow_log=shadow_log)

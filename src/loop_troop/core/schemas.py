@@ -61,6 +61,7 @@ class DispatchDecision(BaseModel):
     label_action: DispatchLabelAction
     reasoning: str = Field(min_length=1)
     bake_off: bool = False
+    ghost_run: bool = False
 
 
 class ChecklistItem(BaseModel):

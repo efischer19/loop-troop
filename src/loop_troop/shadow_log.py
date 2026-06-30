@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
+from loop_troop.core.schemas import DispatchDecision
+
 if TYPE_CHECKING:
     from loop_troop.core.metrics import LLMMetrics
 
@@ -104,6 +106,25 @@ class ShadowLog:
             )
 
         return True
+
+    def inject_replay_event(
+        self,
+        *,
+        repo: str,
+        event_id: str,
+        issue_number: int,
+        dispatch_decision: DispatchDecision,
+        created_at: str | None = None,
+    ) -> bool:
+        event = {
+            "id": event_id,
+            "event": dispatch_decision.event_type.value,
+            "created_at": created_at or self._format_timestamp(datetime.now(UTC).timestamp()),
+            "issue": {"number": issue_number},
+            "label": {"name": dispatch_decision.label_action.label_name},
+            "dispatch_decision": dispatch_decision.model_dump(mode="json"),
+        }
+        return self.log_event(event, repo=repo)
 
     def get_pending_events(self) -> list[LoggedEvent]:
         rows = self._connection.execute(
