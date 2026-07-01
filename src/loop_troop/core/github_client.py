@@ -172,6 +172,7 @@ class GitHubAppAuth:
     ) -> None:
         self._app_id = app_id
         self._private_key_path = Path(private_key_path).expanduser()
+        self._private_key = self._private_key_path.read_text()
         self._installation_id = installation_id
         self._client = client
         self._now = now or (lambda: datetime.now(UTC))
@@ -205,7 +206,7 @@ class GitHubAppAuth:
             "exp": int((now + timedelta(minutes=9)).timestamp()),
             "iss": str(self._app_id),
         }
-        return str(jwt.encode(payload, self._private_key_path.read_text(), algorithm="RS256"))
+        return str(jwt.encode(payload, self._private_key, algorithm="RS256"))
 
 
 class GitHubClient:
