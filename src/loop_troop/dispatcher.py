@@ -217,8 +217,12 @@ class Dispatcher:
         issue_number = self._issue_number_from_event(event)
         issue = await self._github_client.get_issue(owner, repo, issue_number)
         current_label = self._loop_label_from_issue(issue)
+        injected_decision = self._injected_decision(event)
         is_pull_request_event = self._is_pull_request_event(event)
-        target_label = WorkflowLabel.NEEDS_REVIEW if is_pull_request_event else current_label
+        if injected_decision is not None:
+            target_label = WorkflowLabel(injected_decision.label_action.label_name)
+        else:
+            target_label = WorkflowLabel.NEEDS_REVIEW if is_pull_request_event else current_label
         if target_label is None:
             return DispatchOutcome(
                 event_id=event.event_id,
@@ -242,40 +246,43 @@ class Dispatcher:
                 reason=f"Blocked by unresolved dependencies: {', '.join(f'#{item}' for item in blocked_dependencies)}",
             )
 
-        classification = await self._classify_with_retries(
-            event=event,
-            issue=issue,
-            current_label=target_label,
-            expected_route=expected_route,
-        )
-        if classification is None:
-            self._shadow_log.mark_failed(event.event_id)
-            return DispatchOutcome(
+        if injected_decision is not None:
+            decision = injected_decision
+        else:
+            classification = await self._classify_with_retries(
+                event=event,
+                issue=issue,
+                current_label=target_label,
+                expected_route=expected_route,
+            )
+            if classification is None:
+                self._shadow_log.mark_failed(event.event_id)
+                return DispatchOutcome(
+                    event_id=event.event_id,
+                    status="failed",
+                    reason=f"Ollama classification failed after {self._inference_retries} attempts.",
+                )
+
+            if classification.route != expected_route:
+                raise ValueError(
+                    f"Classifier returned route {classification.route.value}, expected {expected_route.value}."
+                )
+
+            self.validate_label_transition(current_label, target_label)
+            decision = DispatchDecision(
                 event_id=event.event_id,
-                status="failed",
-                reason=f"Ollama classification failed after {self._inference_retries} attempts.",
-            )
-
-        if classification.route != expected_route:
-            raise ValueError(
-                f"Classifier returned route {classification.route.value}, expected {expected_route.value}."
-            )
-
-        self.validate_label_transition(current_label, target_label)
-        decision = DispatchDecision(
-            event_id=event.event_id,
-            event_type=EventType(event.event_type),
-            target_profile=TargetExecutionProfile(
-                tier=TIER_BY_ROUTE[classification.route],
-                model_name=classification.model_name,
+                event_type=EventType(event.event_type),
+                target_profile=TargetExecutionProfile(
+                    tier=TIER_BY_ROUTE[classification.route],
+                    model_name=classification.model_name,
+                    reasoning=classification.reasoning,
+                ),
+                label_action=DispatchLabelAction(
+                    action=LabelActionType.ADD,
+                    label_name=target_label.value,
+                ),
                 reasoning=classification.reasoning,
-            ),
-            label_action=DispatchLabelAction(
-                action=LabelActionType.ADD,
-                label_name=target_label.value,
-            ),
-            reasoning=classification.reasoning,
-        )
+            )
         await self._github_client.replace_issue_labels(
             owner,
             repo,
@@ -292,6 +299,13 @@ class Dispatcher:
             reason=f"Dispatched to {decision.target_profile.tier.value}.",
             decision=decision,
         )
+
+    @staticmethod
+    def _injected_decision(event: LoggedEvent) -> DispatchDecision | None:
+        payload = event.payload.get("dispatch_decision")
+        if not isinstance(payload, dict):
+            return None
+        return DispatchDecision.model_validate({**payload, "event_id": event.event_id})
 
     async def _classify_with_retries(
         self,

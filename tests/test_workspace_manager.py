@@ -123,3 +123,11 @@ def test_workspace_manager_manages_branches_and_cleanup(tmp_path: Path) -> None:
 
     manager.cleanup(cloned_repo)
     assert not cloned_repo.exists()
+
+
+def test_workspace_manager_branch_name_for_issue_appends_model_suffix() -> None:
+    assert WorkspaceManager.branch_name_for_issue(
+        42,
+        2,
+        model_name="qwen2.5-coder:32b",
+    ) == "loop/issue-42-item-2-qwen2.5-coder-32b"

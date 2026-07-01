@@ -3,6 +3,7 @@ import pytest
 from pydantic import BaseModel
 
 from loop_troop.core.github_client import GitHubIssue, GitHubIssueComment, GitHubLabel
+from loop_troop.core.schemas import DispatchDecision, DispatchLabelAction
 from loop_troop.core.llm_client import LLMClient
 from loop_troop.core.schemas import EventType, LabelActionType
 from loop_troop.dispatcher import (
@@ -227,6 +228,63 @@ async def test_dispatcher_relabels_pull_request_updates_for_reviewer(tmp_path) -
         assert github_client.replaced_labels == [
             ("octo", "repo", 12, ["backend", WorkflowLabel.NEEDS_REVIEW.value])
         ]
+    finally:
+        shadow_log.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_uses_injected_ghost_run_decision_without_reclassifying(tmp_path) -> None:
+    shadow_log = ShadowLog(tmp_path / "shadow.db")
+
+    class RaisingClassifier:
+        def classify(self, **_kwargs):
+            raise AssertionError("classifier should not be called for injected ghost-run decisions")
+
+    try:
+        decision = DispatchDecision(
+            event_id="ghost-run:42:qwen2.5-coder:32b",
+            event_type=EventType.LABELED,
+            target_profile=TargetExecutionProfile(
+                tier=WorkerTier.T2,
+                model_name="qwen2.5-coder:32b",
+                reasoning="Ghost-run replay requested from the CLI.",
+            ),
+            label_action=DispatchLabelAction(
+                action=LabelActionType.ADD,
+                label_name=WorkflowLabel.READY.value,
+            ),
+            reasoning="Synthetic loop: ready event injected for a local ghost run.",
+            bake_off=True,
+            ghost_run=True,
+        )
+        shadow_log.inject_replay_event(
+            repo="octo/repo",
+            event_id=decision.event_id,
+            issue_number=42,
+            dispatch_decision=decision,
+        )
+        github_client = FakeGitHubClient(
+            issues={
+                42: GitHubIssue(
+                    number=42,
+                    state="open",
+                    title="Replay me",
+                    labels=[GitHubLabel(name=WorkflowLabel.READY.value)],
+                )
+            }
+        )
+        dispatcher = Dispatcher(
+            shadow_log=shadow_log,
+            github_client=github_client,
+            classifier=RaisingClassifier(),
+        )
+
+        outcomes = await dispatcher.dispatch_pending_events()
+
+        assert len(outcomes) == 1
+        assert outcomes[0].decision is not None
+        assert outcomes[0].decision.ghost_run is True
+        assert outcomes[0].decision.target_profile.model_name == "qwen2.5-coder:32b"
     finally:
         shadow_log.close()
 
