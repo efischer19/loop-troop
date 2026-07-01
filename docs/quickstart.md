@@ -7,7 +7,7 @@ Loop Troop should be runnable by a new contributor in about 15 minutes.
 - Python 3.11+
 - Docker
 - Ollama running locally
-- Node.js 20+ (for Repomix and related tooling)
+- Node.js 20+ (for Repomix, which Loop Troop uses for repository context hydration)
 - A GitHub Personal Access Token **or** a GitHub App installation
 
 ## Important security warning

@@ -73,7 +73,7 @@ class Config(BaseSettings):
     github_app_private_key_path: str | None = None
     github_app_installation_id: int | None = None
     ollama_host: str = DEFAULT_OLLAMA_HOST
-    ollama_api_key: SecretStr = Field(default_factory=lambda: SecretStr(DEFAULT_OLLAMA_API_KEY))
+    ollama_api_key: SecretStr = Field(default=SecretStr(DEFAULT_OLLAMA_API_KEY))
     poll_interval_seconds: float = Field(default=DEFAULT_POLL_INTERVAL_SECONDS, gt=0)
     zombie_sweep_interval_seconds: float = Field(default=DEFAULT_ZOMBIE_SWEEP_INTERVAL_SECONDS, gt=0)
     zombie_timeout_seconds: float = Field(default=DEFAULT_ZOMBIE_TIMEOUT_SECONDS, gt=0)
