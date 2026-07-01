@@ -252,7 +252,7 @@ class GitHubClient:
             self._auth: GitHubAuthProvider = PersonalAccessTokenAuth(token=pat)
         elif resolved_config is not None and resolved_config.auth_mode is AuthMode.GITHUB_APP:
             if resolved_config.github_app_id is None or resolved_config.github_app_private_key_path is None:
-                raise ValueError("Complete GitHub App configuration is required for GitHub App auth.")
+                raise ValueError("GitHub App auth requires LOOP_TROOP_APP_ID and LOOP_TROOP_APP_PRIVATE_KEY_PATH.")
             if resolved_config.github_app_installation_id is None:
                 raise ValueError("LOOP_TROOP_APP_INSTALLATION_ID is required for GitHub App auth.")
             self._auth = GitHubAppAuth(

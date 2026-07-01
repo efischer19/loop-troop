@@ -146,16 +146,16 @@ class Config(BaseSettings):
                 "LOOP_TROOP_APP_PRIVATE_KEY_PATH, and LOOP_TROOP_APP_INSTALLATION_ID together."
             )
 
+        app_key_path = self.github_app_private_key_file
+        if app_key_path is not None and not app_key_path.is_file():
+            errors.append(f"GitHub App private key file does not exist: {app_key_path}")
+
         if require_auth and self.auth_mode is None:
             errors.append(
                 "Configure either GITHUB_PAT for Personal Access Token auth, or "
                 "LOOP_TROOP_APP_ID, LOOP_TROOP_APP_PRIVATE_KEY_PATH, and "
                 "LOOP_TROOP_APP_INSTALLATION_ID for GitHub App auth."
             )
-
-        app_key_path = self.github_app_private_key_file
-        if self.auth_mode is AuthMode.GITHUB_APP and app_key_path is not None and not app_key_path.is_file():
-            errors.append(f"GitHub App private key file does not exist: {app_key_path}")
 
         if errors:
             raise ValueError("Invalid Loop Troop configuration:\n- " + "\n- ".join(errors))

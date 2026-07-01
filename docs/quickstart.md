@@ -75,6 +75,8 @@ python -m pip install -e '.[test]'
 
 Environment variables override TOML values when both are set.
 
+Avoid committing secrets to `loop-troop.toml`. Prefer environment variables for credentials, or keep the TOML file local-only and ignored by git.
+
 ### Authentication modes
 
 - **PAT mode:** set `GITHUB_PAT`
