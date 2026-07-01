@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
+from loop_troop.config import Config
 from loop_troop.core.schemas import DispatchDecision
 
 if TYPE_CHECKING:
@@ -49,8 +49,8 @@ class SweptEvent:
 
 
 class ShadowLog:
-    def __init__(self, db_path: str | os.PathLike[str] | None = None) -> None:
-        configured_path = db_path or os.getenv("LOOP_TROOP_DB_PATH")
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        configured_path = db_path or Config.from_sources().db_path
         self.db_path = Path(configured_path).expanduser() if configured_path else DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(self.db_path)

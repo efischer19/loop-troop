@@ -9,8 +9,6 @@ import logging
 import os
 import signal
 import sys
-import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,17 +16,11 @@ import httpx
 
 from loop_troop.architect import ArchitectWorker
 from loop_troop.coder import CoderWorker
+from loop_troop.config import Config, DaemonConfig
 from loop_troop.core.github_client import GitHubClient, GitHubIssueEvent
-from loop_troop.core.llm_client import DEFAULT_OLLAMA_HOST
 from loop_troop.dispatcher import Dispatcher, OllamaDispatcherClassifier, WorkflowLabel
 from loop_troop.reviewer import ReviewerWorker
 from loop_troop.shadow_log import Checkpoint, ShadowLog
-
-DEFAULT_POLL_INTERVAL_SECONDS = 30.0
-DEFAULT_ZOMBIE_SWEEP_INTERVAL_SECONDS = 300.0
-DEFAULT_ZOMBIE_TIMEOUT_SECONDS = 900.0
-DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_GITHUB_BASE_URL = "https://api.github.com"
 
 
 class JsonFormatter(logging.Formatter):
@@ -58,102 +50,6 @@ def configure_logging(level: str) -> None:
 
 def log_structured(logger: logging.Logger, level: int, message: str, **fields: Any) -> None:
     logger.log(level, message, extra={"structured_data": fields})
-
-
-@dataclass(frozen=True, slots=True)
-class DaemonConfig:
-    repo: str
-    db_path: str | None = None
-    repo_path: str | None = None
-    github_base_url: str = DEFAULT_GITHUB_BASE_URL
-    ollama_host: str = DEFAULT_OLLAMA_HOST
-    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
-    zombie_sweep_interval_seconds: float = DEFAULT_ZOMBIE_SWEEP_INTERVAL_SECONDS
-    zombie_timeout_seconds: float = DEFAULT_ZOMBIE_TIMEOUT_SECONDS
-    log_level: str = DEFAULT_LOG_LEVEL
-    dry_run: bool = False
-
-    @classmethod
-    def from_sources(
-        cls,
-        *,
-        args: argparse.Namespace,
-        environ: dict[str, str] | None = None,
-    ) -> DaemonConfig:
-        env = environ or dict(os.environ)
-        file_config = _load_config(Path(args.config)) if args.config else {}
-
-        repo = _resolve_setting(
-            "LOOP_TROOP_REPO",
-            env=env,
-            file_config=file_config,
-            file_path=("github", "repo"),
-            default=None,
-        )
-        if not repo:
-            raise ValueError("LOOP_TROOP_REPO or [github].repo must be configured.")
-
-        return cls(
-            repo=repo,
-            db_path=_resolve_setting(
-                "LOOP_TROOP_DB_PATH",
-                env=env,
-                file_config=file_config,
-                file_path=("shadow_log", "db_path"),
-                default=None,
-            ),
-            repo_path=_resolve_setting(
-                "LOOP_TROOP_REPO_PATH",
-                env=env,
-                file_config=file_config,
-                file_path=("workspace", "repo_path"),
-                default=None,
-            ),
-            github_base_url=_resolve_setting(
-                "LOOP_TROOP_GITHUB_BASE_URL",
-                env=env,
-                file_config=file_config,
-                file_path=("github", "base_url"),
-                default=DEFAULT_GITHUB_BASE_URL,
-            ),
-            ollama_host=_resolve_setting(
-                "OLLAMA_HOST",
-                env=env,
-                file_config=file_config,
-                file_path=("ollama", "host"),
-                default=DEFAULT_OLLAMA_HOST,
-            ),
-            poll_interval_seconds=_resolve_float(
-                "LOOP_TROOP_POLL_INTERVAL",
-                env=env,
-                file_config=file_config,
-                file_path=("daemon", "poll_interval_seconds"),
-                default=DEFAULT_POLL_INTERVAL_SECONDS,
-            ),
-            zombie_sweep_interval_seconds=_resolve_float(
-                "LOOP_TROOP_ZOMBIE_SWEEP_INTERVAL",
-                env=env,
-                file_config=file_config,
-                file_path=("daemon", "zombie_sweep_interval_seconds"),
-                default=DEFAULT_ZOMBIE_SWEEP_INTERVAL_SECONDS,
-            ),
-            zombie_timeout_seconds=_resolve_float(
-                "LOOP_TROOP_ZOMBIE_TIMEOUT",
-                env=env,
-                file_config=file_config,
-                file_path=("daemon", "zombie_timeout_seconds"),
-                default=DEFAULT_ZOMBIE_TIMEOUT_SECONDS,
-            ),
-            log_level=_resolve_setting(
-                "LOOP_TROOP_LOG_LEVEL",
-                env=env,
-                file_config=file_config,
-                file_path=("logging", "level"),
-                default=DEFAULT_LOG_LEVEL,
-            ),
-            dry_run=bool(args.dry_run),
-        )
-
 
 class ShadowLogETagStore:
     def __init__(self, shadow_log: ShadowLog) -> None:
@@ -419,15 +315,17 @@ class SyncDaemon:
 
 
 async def run_daemon(
-    config: DaemonConfig,
+    config: Config,
     *,
     ollama_transport: httpx.AsyncBaseTransport | None = None,
     max_cycles: int | None = None,
 ) -> None:
-    shadow_log = ShadowLog(config.db_path)
+    daemon_config = config.to_daemon_config()
+    shadow_log = ShadowLog(daemon_config.db_path)
     github_client = GitHubClient(
-        base_url=config.github_base_url,
-        poll_interval_seconds=config.poll_interval_seconds,
+        config=config,
+        base_url=daemon_config.github_base_url,
+        poll_interval_seconds=daemon_config.poll_interval_seconds,
         etag_store=ShadowLogETagStore(shadow_log),
         shadow_log=shadow_log,
     )
@@ -437,7 +335,7 @@ async def run_daemon(
         classifier=OllamaDispatcherClassifier(),
     )
     daemon = SyncDaemon(
-        config=config,
+        config=daemon_config,
         github_client=github_client,
         shadow_log=shadow_log,
         dispatcher=dispatcher,
@@ -455,50 +353,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    config = DaemonConfig.from_sources(args=args)
+    config = Config.from_sources(
+        config_path=args.config,
+        dry_run=bool(args.dry_run),
+        require_repo=True,
+        require_auth=True,
+    )
     configure_logging(config.log_level)
     asyncio.run(run_daemon(config))
     return 0
-
-
-def _load_config(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        payload = tomllib.load(handle)
-    if not isinstance(payload, dict):
-        raise ValueError(f"Config file {path} must contain a TOML table at the top level.")
-    return payload
-
-
-def _resolve_setting(
-    env_key: str,
-    *,
-    env: dict[str, str],
-    file_config: dict[str, Any],
-    file_path: tuple[str, str],
-    default: str | None,
-) -> str | None:
-    if env_key in env and env[env_key]:
-        return env[env_key]
-    section = file_config.get(file_path[0], {})
-    if isinstance(section, dict):
-        value = section.get(file_path[1])
-        if value is not None:
-            return str(value)
-    return default
-
-
-def _resolve_float(
-    env_key: str,
-    *,
-    env: dict[str, str],
-    file_config: dict[str, Any],
-    file_path: tuple[str, str],
-    default: float,
-) -> float:
-    value = _resolve_setting(env_key, env=env, file_config=file_config, file_path=file_path, default=None)
-    if value is None:
-        return default
-    return float(value)
 
 
 def _split_repo(repo: str) -> tuple[str, str]:

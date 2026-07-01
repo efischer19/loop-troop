@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -13,17 +12,11 @@ import instructor
 from openai import OpenAI
 from pydantic import BaseModel
 
+from loop_troop.config import Config, DEFAULT_OLLAMA_API_KEY, DEFAULT_OLLAMA_HOST
 from loop_troop.core.metrics import LLMMetrics, MetricsCollector
 from loop_troop.execution import WorkerTier
 
-DEFAULT_OLLAMA_HOST = "http://localhost:11434"
-DEFAULT_API_KEY = "ollama"
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_MODEL_ENV_VARS = {
-    WorkerTier.T1: "LOOP_TROOP_T1_MODEL",
-    WorkerTier.T2: "LOOP_TROOP_T2_MODEL",
-    WorkerTier.T3: "LOOP_TROOP_T3_MODEL",
-}
 _CREDENTIAL_PATTERNS = (
     ("ghp", re.compile(r"\bghp_[A-Za-z0-9]{36}\b")),
     ("gho", re.compile(r"\bgho_[A-Za-z0-9]{36}\b")),
@@ -52,12 +45,15 @@ class LLMClient:
         *,
         ollama_host: str | None = None,
         api_key: str | None = None,
+        config: Config | None = None,
         openai_factory: type[OpenAI] = OpenAI,
         instructor_factory: Any = instructor.from_openai,
         metrics_collector: MetricsCollector | None = None,
     ) -> None:
-        self._ollama_host = (ollama_host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST).rstrip("/")
-        self._api_key = api_key or os.getenv("OLLAMA_API_KEY") or DEFAULT_API_KEY
+        resolved_config = config or Config.from_sources()
+        self._ollama_host = (ollama_host or resolved_config.ollama_host or DEFAULT_OLLAMA_HOST).rstrip("/")
+        self._api_key = api_key or resolved_config.ollama_api_key_value or DEFAULT_OLLAMA_API_KEY
+        self._config = resolved_config
         self._openai_factory = openai_factory
         self._instructor_factory = instructor_factory
         self._metrics_collector = metrics_collector
@@ -69,7 +65,7 @@ class LLMClient:
         model_override: str | None = None,
         mode: instructor.Mode = instructor.Mode.JSON,
     ) -> PreparedLLMClient:
-        model_name = model_override or self._default_model_for_tier(tier)
+        model_name = model_override or self._default_model_for_tier(tier, self._config)
         client = self._instructor_factory(
             self._openai_factory(api_key=self._api_key, base_url=f"{self._ollama_host}/v1"),
             mode=mode,
@@ -187,11 +183,10 @@ class LLMClient:
         return response.status.strip().lower() == "ok"
 
     @staticmethod
-    def _default_model_for_tier(tier: WorkerTier) -> str:
-        env_var = DEFAULT_MODEL_ENV_VARS[tier]
-        model_name = os.getenv(env_var)
+    def _default_model_for_tier(tier: WorkerTier, config: Config) -> str:
+        model_name = config.model_for_tier(tier.value)
         if not model_name:
-            raise ValueError(f"{env_var} must be set when no model_override is provided.")
+            raise ValueError(f"Configure LOOP_TROOP_{tier.value}_MODEL when no model_override is provided.")
         return model_name
 
     @staticmethod

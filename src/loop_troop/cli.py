@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 import httpx
 
-from loop_troop.core.llm_client import DEFAULT_OLLAMA_HOST
+from loop_troop.config import Config, DEFAULT_OLLAMA_HOST
 from loop_troop.core.schemas import (
     DispatchDecision,
     DispatchLabelAction,
@@ -18,7 +18,6 @@ from loop_troop.core.schemas import (
     LabelActionType,
     TargetExecutionProfile,
 )
-from loop_troop.daemon import DaemonConfig
 from loop_troop.dispatcher import WorkflowLabel
 from loop_troop.execution import WorkerTier
 from loop_troop.shadow_log import ShadowLog
@@ -54,7 +53,7 @@ def run_replay(
     *,
     client_factory: Callable[..., httpx.Client] = httpx.Client,
 ) -> dict[str, Any]:
-    config = DaemonConfig.from_sources(args=argparse.Namespace(config=args.config, dry_run=False))
+    config = Config.from_sources(config_path=args.config, require_repo=True)
     ollama_host = (args.ollama_host or config.ollama_host or DEFAULT_OLLAMA_HOST).rstrip("/")
     _validate_model_available(args.model, ollama_host=ollama_host, client_factory=client_factory)
 
