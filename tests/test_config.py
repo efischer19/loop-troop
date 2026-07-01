@@ -28,6 +28,10 @@ def _clear_loop_troop_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+def _write_placeholder_pem(path: Path) -> None:
+    path.write_text("-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n")
+
+
 def test_config_loads_from_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _clear_loop_troop_env(monkeypatch)
     monkeypatch.setenv("LOOP_TROOP_REPO", "octo/env-repo")
@@ -53,7 +57,7 @@ def test_config_loads_from_environment(monkeypatch: pytest.MonkeyPatch, tmp_path
 def test_config_loads_from_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _clear_loop_troop_env(monkeypatch)
     key_path = tmp_path / "loop-troop-app.pem"
-    key_path.write_text("-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n")
+    _write_placeholder_pem(key_path)
     config_path = tmp_path / "loop-troop.toml"
     config_path.write_text(
         "\n".join(
@@ -128,7 +132,7 @@ def test_config_detects_auth_mode(
     _clear_loop_troop_env(monkeypatch)
     monkeypatch.setenv("LOOP_TROOP_REPO", "octo/repo")
     key_path = tmp_path / "app.pem"
-    key_path.write_text("placeholder")
+    _write_placeholder_pem(key_path)
 
     for key, value in env_values.items():
         monkeypatch.setenv(key, str(key_path) if value == "__KEY_PATH__" else value)

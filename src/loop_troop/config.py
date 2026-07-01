@@ -20,6 +20,11 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_GITHUB_BASE_URL = "https://api.github.com"
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_OLLAMA_API_KEY = "ollama"
+_TIER_MODEL_FIELDS = {
+    "T1": "t1_model",
+    "T2": "t2_model",
+    "T3": "t3_model",
+}
 
 
 class AuthMode(StrEnum):
@@ -172,11 +177,8 @@ class Config(BaseSettings):
         )
 
     def model_for_tier(self, tier: str) -> str | None:
-        return {
-            "T1": self.t1_model,
-            "T2": self.t2_model,
-            "T3": self.t3_model,
-        }.get(tier)
+        field_name = _TIER_MODEL_FIELDS.get(tier)
+        return getattr(self, field_name) if field_name is not None else None
 
     def _has_complete_app_auth(self) -> bool:
         return all(

@@ -18,6 +18,9 @@ from loop_troop.config import AuthMode, Config
 
 T = TypeVar("T", bound=BaseModel)
 SleepFn = Callable[[float], Awaitable[None]]
+TOKEN_REFRESH_BUFFER_MINUTES = 5
+JWT_IAT_OFFSET_SECONDS = 60
+JWT_EXPIRY_MINUTES = 9
 
 
 class GitHubUser(BaseModel):
@@ -181,7 +184,7 @@ class GitHubAppAuth:
 
     async def authorization_header(self) -> str:
         if self._cached_token is not None and self._expires_at is not None:
-            if self._expires_at - self._now() > timedelta(minutes=5):
+            if self._expires_at - self._now() > timedelta(minutes=TOKEN_REFRESH_BUFFER_MINUTES):
                 return "Bearer " + self._cached_token
 
         response = await self._client.post(
@@ -202,8 +205,8 @@ class GitHubAppAuth:
     def _app_jwt(self) -> str:
         now = self._now()
         payload = {
-            "iat": int((now - timedelta(seconds=60)).timestamp()),
-            "exp": int((now + timedelta(minutes=9)).timestamp()),
+            "iat": int((now - timedelta(seconds=JWT_IAT_OFFSET_SECONDS)).timestamp()),
+            "exp": int((now + timedelta(minutes=JWT_EXPIRY_MINUTES)).timestamp()),
             "iss": str(self._app_id),
         }
         return str(jwt.encode(payload, self._private_key, algorithm="RS256"))
