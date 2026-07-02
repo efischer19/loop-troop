@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Generic, Mapping, Protocol, TypeVar
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from pydantic import BaseModel, ConfigDict, Field
+
+from loop_troop.config import AuthMode, Config
 
 T = TypeVar("T", bound=BaseModel)
 SleepFn = Callable[[float], Awaitable[None]]
+TOKEN_REFRESH_BUFFER_MINUTES = 5
+JWT_IAT_OFFSET_SECONDS = 60
+JWT_EXPIRY_MINUTES = 9
 
 
 class GitHubUser(BaseModel):
@@ -144,11 +151,73 @@ class CheckboxConflictError(Exception):
     """Raised when a concurrent comment modification is detected (HTTP 412 Precondition Failed)."""
 
 
+class GitHubAuthProvider(Protocol):
+    async def authorization_header(self) -> str: ...
+
+
+@dataclass(slots=True)
+class PersonalAccessTokenAuth:
+    token: str
+
+    async def authorization_header(self) -> str:
+        return "Bearer " + self.token
+
+
+class GitHubAppAuth:
+    def __init__(
+        self,
+        *,
+        app_id: int,
+        private_key_path: str,
+        installation_id: int,
+        client: httpx.AsyncClient,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._app_id = app_id
+        self._private_key_path = Path(private_key_path).expanduser()
+        self._private_key = self._private_key_path.read_text()
+        self._installation_id = installation_id
+        self._client = client
+        self._now = now or (lambda: datetime.now(UTC))
+        self._cached_token: str | None = None
+        self._expires_at: datetime | None = None
+
+    async def authorization_header(self) -> str:
+        if self._cached_token is not None and self._expires_at is not None:
+            if self._expires_at - self._now() > timedelta(minutes=TOKEN_REFRESH_BUFFER_MINUTES):
+                return "Bearer " + self._cached_token
+
+        response = await self._client.post(
+            f"/app/installations/{self._installation_id}/access_tokens",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": "Bearer " + self._app_jwt(),
+                "User-Agent": "loop-troop-github-client",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        self._cached_token = str(payload["token"])
+        self._expires_at = datetime.fromisoformat(str(payload["expires_at"]).replace("Z", "+00:00"))
+        return "Bearer " + self._cached_token
+
+    def _app_jwt(self) -> str:
+        now = self._now()
+        payload = {
+            "iat": int((now - timedelta(seconds=JWT_IAT_OFFSET_SECONDS)).timestamp()),
+            "exp": int((now + timedelta(minutes=JWT_EXPIRY_MINUTES)).timestamp()),
+            "iss": str(self._app_id),
+        }
+        return str(jwt.encode(payload, self._private_key, algorithm="RS256"))
+
+
 class GitHubClient:
     def __init__(
         self,
         *,
         pat: str | None = None,
+        config: Config | None = None,
         base_url: str = "https://api.github.com",
         timeout: float = 10.0,
         poll_interval_seconds: float = 60.0,
@@ -168,18 +237,37 @@ class GitHubClient:
         self._sleep = sleep
         self._now = now
 
-        token = pat or os.getenv("GITHUB_PAT")
-        if not token:
-            raise ValueError("GITHUB_PAT must be set in the environment or passed to GitHubClient.")
-
-        self._default_headers = {
+        self._base_headers = {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
             "User-Agent": "loop-troop-github-client",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=base_url, timeout=timeout)
+
+        resolved_config = config
+        if pat is None:
+            resolved_config = config or Config.from_sources(require_auth=True)
+        if pat is not None:
+            self._auth: GitHubAuthProvider = PersonalAccessTokenAuth(token=pat)
+        elif resolved_config is not None and resolved_config.auth_mode is AuthMode.GITHUB_APP:
+            if resolved_config.github_app_id is None or resolved_config.github_app_private_key_path is None:
+                raise ValueError("GitHub App auth requires LOOP_TROOP_APP_ID and LOOP_TROOP_APP_PRIVATE_KEY_PATH.")
+            if resolved_config.github_app_installation_id is None:
+                raise ValueError("LOOP_TROOP_APP_INSTALLATION_ID is required for GitHub App auth.")
+            self._auth = GitHubAppAuth(
+                app_id=resolved_config.github_app_id,
+                private_key_path=resolved_config.github_app_private_key_path,
+                installation_id=resolved_config.github_app_installation_id,
+                client=self._client,
+            )
+        else:
+            token = resolved_config.github_pat_value if resolved_config is not None else None
+            if not token:
+                raise ValueError(
+                    "Configure GITHUB_PAT or the full GitHub App settings before creating GitHubClient."
+                )
+            self._auth = PersonalAccessTokenAuth(token=token)
 
     async def __aenter__(self) -> GitHubClient:
         return self
@@ -190,6 +278,13 @@ class GitHubClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    async def _headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+        headers = dict(self._base_headers)
+        headers["Authorization"] = await self._auth.authorization_header()
+        if extra:
+            headers.update(extra)
+        return headers
 
     async def poll_issue_events(
         self,
@@ -242,14 +337,14 @@ class GitHubClient:
         )
 
     async def get_authenticated_user(self) -> GitHubUser:
-        response = await self._client.get("/user", headers=self._default_headers)
+        response = await self._client.get("/user", headers=await self._headers())
         response.raise_for_status()
         return GitHubUser.model_validate(response.json())
 
     async def get_issue(self, owner: str, repo: str, issue_number: int) -> GitHubIssue:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/issues/{issue_number}",
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return GitHubIssue.model_validate(response.json())
@@ -265,7 +360,7 @@ class GitHubClient:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
             params={"per_page": per_page},
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return [GitHubIssueComment.model_validate(item) for item in response.json()]
@@ -273,7 +368,7 @@ class GitHubClient:
     async def get_pull_request(self, owner: str, repo: str, pull_number: int) -> GitHubPullRequest:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/pulls/{pull_number}",
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return GitHubPullRequest.model_validate(response.json())
@@ -281,10 +376,7 @@ class GitHubClient:
     async def get_pull_request_diff(self, owner: str, repo: str, pull_number: int) -> str:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/pulls/{pull_number}",
-            headers={
-                **self._default_headers,
-                "Accept": "application/vnd.github.diff",
-            },
+            headers=await self._headers({"Accept": "application/vnd.github.diff"}),
         )
         response.raise_for_status()
         return response.text
@@ -300,7 +392,7 @@ class GitHubClient:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/pulls/{pull_number}/files",
             params={"per_page": per_page},
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return [GitHubPullRequestFile.model_validate(item) for item in response.json()]
@@ -308,7 +400,7 @@ class GitHubClient:
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[GitHubCheckRun]:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/commits/{ref}/check-runs",
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         payload = response.json()
@@ -336,7 +428,7 @@ class GitHubClient:
         response = await self._client.post(
             f"/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
             json=payload,
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return response.json()
@@ -352,7 +444,7 @@ class GitHubClient:
         response = await self._client.put(
             f"/repos/{owner}/{repo}/issues/{issue_number}/labels",
             json={"labels": labels},
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return [GitHubLabel.model_validate(item).name for item in response.json()]
@@ -368,7 +460,7 @@ class GitHubClient:
         response = await self._client.post(
             f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
             json={"body": body},
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return GitHubIssueComment.model_validate(response.json())
@@ -381,7 +473,7 @@ class GitHubClient:
     ) -> tuple[GitHubIssueComment, str | None]:
         response = await self._client.get(
             f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         etag = response.headers.get("ETag")
@@ -396,7 +488,7 @@ class GitHubClient:
         body: str,
         if_match: str | None = None,
     ) -> GitHubIssueComment:
-        headers = dict(self._default_headers)
+        headers = await self._headers()
         if if_match is not None:
             headers["If-Match"] = if_match
         response = await self._client.patch(
@@ -426,7 +518,7 @@ class GitHubClient:
         response = await self._client.post(
             f"/repos/{owner}/{repo}/issues",
             json=payload,
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return GitHubIssue.model_validate(response.json())
@@ -453,7 +545,7 @@ class GitHubClient:
         response = await self._client.post(
             f"/repos/{owner}/{repo}/pulls",
             json=payload,
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return GitHubPullRequest.model_validate(response.json())
@@ -478,7 +570,7 @@ class GitHubClient:
         response = await self._client.patch(
             f"/repos/{owner}/{repo}/pulls/{pull_number}",
             json=payload,
-            headers=self._default_headers,
+            headers=await self._headers(),
         )
         response.raise_for_status()
         return GitHubPullRequest.model_validate(response.json())
@@ -544,7 +636,7 @@ class GitHubClient:
         cache_key: str,
     ) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
-            headers = dict(self._default_headers)
+            headers = await self._headers()
             etag = self._etag_store.get(cache_key)
             if etag:
                 headers["If-None-Match"] = etag
