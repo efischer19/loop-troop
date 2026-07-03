@@ -1,11 +1,156 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
+import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import ValidationError
+from pydantic import SecretStr
 
-from loop_troop.core.github_client import GitHubClient, InMemoryETagStore
+from loop_troop.config import Config
+from loop_troop.core.github_client import GitHubAppAuth, GitHubClient, InMemoryETagStore
 from loop_troop.shadow_log import ShadowLog
+
+
+def _write_test_private_key(tmp_path) -> tuple[str, rsa.RSAPrivateKey]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_path = tmp_path / "loop-troop-test-app.pem"
+    private_key_path.write_text(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+    )
+    return str(private_key_path), private_key
+
+
+@pytest.mark.asyncio
+async def test_github_app_auth_generates_expected_jwt_claims(tmp_path) -> None:
+    private_key_path, private_key = _write_test_private_key(tmp_path)
+    issued_at = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+    auth = GitHubAppAuth(
+        app_id=321,
+        private_key_path=private_key_path,
+        installation_id=654,
+        client=httpx.AsyncClient(base_url="https://api.github.com"),
+        now=lambda: issued_at,
+    )
+
+    encoded = auth._app_jwt()
+    payload = jwt.decode(
+        encoded,
+        private_key.public_key(),
+        algorithms=["RS256"],
+        options={"verify_aud": False, "verify_exp": False},
+    )
+
+    assert payload["iss"] == "321"
+    assert payload["iat"] == int((issued_at - timedelta(seconds=60)).timestamp())
+    assert payload["exp"] == int((issued_at + timedelta(minutes=9)).timestamp())
+
+    await auth._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_github_app_auth_refreshes_token_before_expiry(tmp_path) -> None:
+    private_key_path, _ = _write_test_private_key(tmp_path)
+    current_time = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+    token_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_requests
+        if request.method == "POST" and request.url.path == "/app/installations/654/access_tokens":
+            token_requests += 1
+            assert request.headers["Authorization"].startswith("Bearer ")
+            token = f"installation-token-{token_requests}"
+            expires_at = (
+                current_time + timedelta(minutes=30 if token_requests == 1 else 90)
+            ).isoformat().replace("+00:00", "Z")
+            return httpx.Response(201, json={"token": token, "expires_at": expires_at})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    auth = GitHubAppAuth(
+        app_id=321,
+        private_key_path=private_key_path,
+        installation_id=654,
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.github.com",
+        ),
+        now=lambda: current_time,
+    )
+    first = await auth.authorization_header()
+    current_time = current_time + timedelta(minutes=26)
+    second = await auth.authorization_header()
+    third = await auth.authorization_header()
+
+    assert first == "Bearer " + "installation-token-1"
+    assert second == "Bearer " + "installation-token-2"
+    assert third == "Bearer " + "installation-token-2"
+    assert token_requests == 2
+
+    await auth._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_github_client_uses_github_app_for_authenticated_api_calls(tmp_path) -> None:
+    private_key_path, _ = _write_test_private_key(tmp_path)
+    seen_headers: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append((request.method, request.headers["Authorization"]))
+        if request.method == "POST" and request.url.path == "/app/installations/654/access_tokens":
+            return httpx.Response(
+                201,
+                json={"token": "installation-token-1", "expires_at": "2026-07-01T13:00:00Z"},
+            )
+        if request.method == "GET" and request.url.path == "/user":
+            return httpx.Response(200, json={"login": "loop-troop[bot]", "id": 1})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    config = Config(
+        github_app_id=321,
+        github_app_private_key_path=private_key_path,
+        github_app_installation_id=654,
+    )
+    async with GitHubClient(
+        config=config,
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.github.com",
+        ),
+    ) as client:
+        user = await client.get_authenticated_user()
+
+    assert user.login == "loop-troop[bot]"
+    assert seen_headers == [
+        ("POST", seen_headers[0][1]),
+        ("GET", "Bearer " + "installation-token-1"),
+    ]
+    assert seen_headers[0][1].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_github_client_falls_back_to_pat_when_github_app_config_is_absent() -> None:
+    seen_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(request.headers["Authorization"])
+        return httpx.Response(200, json={"login": "octocat", "id": 1})
+
+    transport = httpx.MockTransport(handler)
+    config = Config(github_pat=SecretStr("github_pat_example"))
+    async with GitHubClient(
+        config=config,
+        client=httpx.AsyncClient(transport=transport, base_url="https://api.github.com"),
+    ) as client:
+        user = await client.get_authenticated_user()
+
+    assert user.login == "octocat"
+    assert seen_headers == ["Bearer " + "github_pat_example"]
 
 
 @pytest.mark.asyncio

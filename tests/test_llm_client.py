@@ -180,3 +180,43 @@ def test_complete_structured_rejects_prompts_with_github_credentials(
         )
 
     assert called is False
+
+
+def test_complete_structured_rejects_prompts_with_github_app_private_key(monkeypatch) -> None:
+    called = False
+
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            nonlocal called
+            called = True
+            return DummyResponse(ok=True)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeInstructorClient:
+        chat = FakeChat()
+
+    monkeypatch.setenv("LOOP_TROOP_T1_MODEL", "llama3.2:latest")
+    llm_client = LLMClient(
+        openai_factory=lambda **_: object(),
+        instructor_factory=lambda *_args, **_kwargs: FakeInstructorClient(),
+    )
+
+    with pytest.raises(PromptSanitizationError, match="matching the github_app_private_key token format"):
+        llm_client.complete_structured(
+            tier=WorkerTier.T1,
+            response_model=DummyResponse,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "-----BEGIN PRIVATE KEY-----\n"
+                        "test-private-key-material\n"
+                        "-----END PRIVATE KEY-----"
+                    ),
+                }
+            ],
+        )
+
+    assert called is False

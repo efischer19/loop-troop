@@ -21,6 +21,10 @@ _CREDENTIAL_PATTERNS = (
     ("ghp", re.compile(r"\bghp_[A-Za-z0-9]{36}\b")),
     ("gho", re.compile(r"\bgho_[A-Za-z0-9]{36}\b")),
     ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
+    (
+        "github_app_private_key",
+        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+    ),
 )
 _LOGGER = logging.getLogger("loop_troop.llm_client")
 

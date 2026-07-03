@@ -79,8 +79,19 @@ Avoid committing secrets to `loop-troop.toml`. Prefer environment variables for 
 
 ### Authentication modes
 
-- **PAT mode:** set `GITHUB_PAT`
-- **GitHub App mode:** set `LOOP_TROOP_APP_ID`, `LOOP_TROOP_APP_PRIVATE_KEY_PATH`, and `LOOP_TROOP_APP_INSTALLATION_ID`
+- **PAT mode (simple, best for personal use):** set `GITHUB_PAT`
+- **GitHub App mode (recommended for teams and open-source deployments):** set `LOOP_TROOP_APP_ID`, `LOOP_TROOP_APP_PRIVATE_KEY_PATH`, and `LOOP_TROOP_APP_INSTALLATION_ID`
+
+Example GitHub App TOML configuration:
+
+```toml
+[github.app]
+id = 123
+private_key_path = "/absolute/path/to/loop-troop-app.pem"
+installation_id = 456
+```
+
+Keep the GitHub App private key on the host. Loop Troop never forwards GitHub credentials into Docker sandboxes or LLM prompts.
 
 If neither mode is configured, Loop Troop will fail fast with a validation error.
 

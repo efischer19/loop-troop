@@ -188,7 +188,8 @@ def test_run_rejects_docker_socket_in_constructed_command(tmp_path: Path) -> Non
 
 def test_no_env_vars_leaked_into_container(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The sandbox must pass env={} to subprocess so no host env vars reach the container."""
-    monkeypatch.setenv("SECRET_TOKEN", "super-secret")
+    monkeypatch.setenv("GITHUB_PAT", "github_pat_super_secret")
+    monkeypatch.setenv("LOOP_TROOP_APP_PRIVATE_KEY_PATH", "/tmp/app.pem")
     monkeypatch.setenv("HOME", "/root")
 
     captured_kwargs: dict = {}
